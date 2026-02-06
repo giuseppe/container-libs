@@ -783,9 +783,19 @@ func findBinaryTag(binaryDigest []byte, cacheFile *cacheFile) (bool, uint64, uin
 	return false, 0, 0
 }
 
-func (c *layersCache) findDigestInternal(digest string) (string, string, int64, error) {
+// digestLookupResult contains the result of looking up a digest in the cache.
+type digestLookupResult struct {
+	// Target is the layer ID where the content was found.
+	Target string
+	// Path is the file path within the layer.
+	Path string
+	// Offset is the offset within the file where the content starts.
+	Offset int64
+}
+
+func (c *layersCache) findDigestInternal(digest string) (*digestLookupResult, error) {
 	if digest == "" {
-		return "", "", -1, nil
+		return nil, nil
 	}
 
 	c.mutex.RLock()
@@ -793,7 +803,7 @@ func (c *layersCache) findDigestInternal(digest string) (string, string, int64, 
 
 	binaryDigest, err := makeBinaryDigest(digest)
 	if err != nil {
-		return "", "", 0, err
+		return nil, err
 	}
 
 	for _, layer := range c.layers {
@@ -803,31 +813,34 @@ func (c *layersCache) findDigestInternal(digest string) (string, string, int64, 
 		found, off, tagLen := findBinaryTag(binaryDigest, layer.cacheFile)
 		if found {
 			if uint64(len(layer.cacheFile.vdata)) < off+tagLen {
-				return "", "", 0, fmt.Errorf("corrupted cache file for layer %q", layer.id)
+				return nil, fmt.Errorf("corrupted cache file for layer %q", layer.id)
 			}
 			fileLocationData := layer.cacheFile.vdata[off : off+tagLen]
 
 			fnamePosition, offFile, _, err := parseFileLocation(fileLocationData)
 			if err != nil {
-				return "", "", 0, fmt.Errorf("corrupted cache file for layer %q", layer.id)
+				return nil, fmt.Errorf("corrupted cache file for layer %q", layer.id)
 			}
 
 			if len(layer.cacheFile.fnames) < fnamePosition+4 {
-				return "", "", 0, fmt.Errorf("corrupted cache file for layer %q", layer.id)
+				return nil, fmt.Errorf("corrupted cache file for layer %q", layer.id)
 			}
 			lenPath := int(binary.LittleEndian.Uint32(layer.cacheFile.fnames[fnamePosition : fnamePosition+4]))
 
 			if len(layer.cacheFile.fnames) < fnamePosition+lenPath+4 {
-				return "", "", 0, fmt.Errorf("corrupted cache file for layer %q", layer.id)
+				return nil, fmt.Errorf("corrupted cache file for layer %q", layer.id)
 			}
 			path := string(layer.cacheFile.fnames[fnamePosition+4 : fnamePosition+lenPath+4])
 
-			// parts[1] is the chunk length, currently unused.
-			return layer.target, path, int64(offFile), nil
+			return &digestLookupResult{
+				Target: layer.target,
+				Path:   path,
+				Offset: int64(offFile),
+			}, nil
 		}
 	}
 
-	return "", "", -1, nil
+	return nil, nil
 }
 
 // findFileInOtherLayers finds the specified file in other layers.
@@ -841,15 +854,25 @@ func (c *layersCache) findFileInOtherLayers(file *fileMetadata, useHardLinks boo
 			return "", "", err
 		}
 	}
-	target, name, off, err := c.findDigestInternal(digest)
-	if off == 0 {
-		return target, name, err
+	result, err := c.findDigestInternal(digest)
+	if err != nil {
+		return "", "", err
 	}
-	return "", "", nil
+	if result == nil || result.Offset != 0 {
+		return "", "", nil
+	}
+	return result.Target, result.Path, nil
 }
 
 func (c *layersCache) findChunkInOtherLayers(chunk *minimal.FileMetadata) (string, string, int64, error) {
-	return c.findDigestInternal(chunk.ChunkDigest)
+	result, err := c.findDigestInternal(chunk.ChunkDigest)
+	if err != nil {
+		return "", "", 0, err
+	}
+	if result == nil {
+		return "", "", 0, nil
+	}
+	return result.Target, result.Path, result.Offset, nil
 }
 
 func unmarshalToc(manifest []byte) (*minimal.TOC, error) {
