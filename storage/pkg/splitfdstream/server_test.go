@@ -31,7 +31,7 @@ func (m *MockDriver) GetSplitFDStream(id, parent string, options *GetSplitFDStre
 
 func TestSplitFDStreamServer_StartStop(t *testing.T) {
 	mockDriver := &MockDriver{}
-	server := NewJSONRPCServer(mockDriver)
+	server := NewJSONRPCServer(mockDriver, nil)
 
 	tmpDir := t.TempDir()
 	socketPath := filepath.Join(tmpDir, "test.sock")
@@ -63,7 +63,7 @@ func TestSplitFDStreamServer_StartStop(t *testing.T) {
 
 func TestSplitFDStreamServer_DoubleStart(t *testing.T) {
 	mockDriver := &MockDriver{}
-	server := NewJSONRPCServer(mockDriver)
+	server := NewJSONRPCServer(mockDriver, nil)
 
 	tmpDir := t.TempDir()
 	socketPath := filepath.Join(tmpDir, "test.sock")
@@ -84,7 +84,7 @@ func TestSplitFDStreamServer_DoubleStart(t *testing.T) {
 
 func TestSplitFDStreamServer_PingRequest(t *testing.T) {
 	mockDriver := &MockDriver{}
-	server := NewJSONRPCServer(mockDriver)
+	server := NewJSONRPCServer(mockDriver, nil)
 
 	tmpDir := t.TempDir()
 	socketPath := filepath.Join(tmpDir, "test.sock")
@@ -128,7 +128,7 @@ func TestSplitFDStreamServer_PingRequest(t *testing.T) {
 func TestSplitFDStreamServer_UnsupportedDriver(t *testing.T) {
 	// Use mockBaseDriver which does NOT implement SplitFDStreamDriver
 	baseDriver := &mockBaseDriver{}
-	server := NewJSONRPCServer(baseDriver)
+	server := NewJSONRPCServer(baseDriver, nil)
 
 	tmpDir := t.TempDir()
 	socketPath := filepath.Join(tmpDir, "test.sock")
@@ -182,7 +182,7 @@ func TestSplitFDStreamServer_UnsupportedDriver(t *testing.T) {
 
 func TestSplitFDStreamServer_InvalidRequest(t *testing.T) {
 	mockDriver := &MockDriver{}
-	server := NewJSONRPCServer(mockDriver)
+	server := NewJSONRPCServer(mockDriver, nil)
 
 	tmpDir := t.TempDir()
 	socketPath := filepath.Join(tmpDir, "test.sock")

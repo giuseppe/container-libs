@@ -4129,7 +4129,7 @@ func (s *store) SplitFDStreamSocket() (*os.File, error) {
 
 	// Initialize server if not already created
 	if s.jsonRPCServer == nil {
-		s.jsonRPCServer = splitfdstream.NewJSONRPCServer(s.graphDriver)
+		s.jsonRPCServer = splitfdstream.NewJSONRPCServer(s.graphDriver, nil)
 	}
 
 	// Start handling the server connection in a goroutine

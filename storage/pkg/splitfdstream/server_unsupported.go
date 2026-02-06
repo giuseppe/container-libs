@@ -7,11 +7,21 @@ import (
 	"os"
 )
 
+// FileByDigestResult contains the result of looking up a file by its digest.
+type FileByDigestResult struct {
+	File   *os.File
+	Offset int64
+	Size   int64
+}
+
+// DigestLookupFunc is a function that looks up a file by its digest.
+type DigestLookupFunc func(digest string) (*FileByDigestResult, error)
+
 // JSONRPCServer manages the JSON-RPC server for storage operations.
 type JSONRPCServer struct{}
 
 // NewJSONRPCServer creates a new JSON-RPC server.
-func NewJSONRPCServer(driver any) *JSONRPCServer {
+func NewJSONRPCServer(driver any, digestLookup DigestLookupFunc) *JSONRPCServer {
 	return &JSONRPCServer{}
 }
 

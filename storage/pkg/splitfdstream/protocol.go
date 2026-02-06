@@ -14,6 +14,7 @@ const (
 const (
 	MethodApplySplitFDStream = "apply_splitfdstream"
 	MethodGetSplitFDStream   = "get_splitfdstream"
+	MethodLookupDigest       = "lookup_digest"
 	MethodPing               = "ping"
 )
 
@@ -28,6 +29,8 @@ const (
 	// Application-specific error codes (range -32000 to -32099)
 	ErrorCodeDriverNotSupported  = -32000
 	ErrorCodeFileDescriptorError = -32001
+	ErrorCodeDigestNotFound      = -32002
+	ErrorCodeStoreNotAvailable   = -32003
 )
 
 // SplitFDStreamRequest represents a JSON-RPC request for splitfdstream operations.
@@ -59,6 +62,8 @@ type SplitFDStreamResult struct {
 	FileDescriptors *int   `json:"fileDescriptors,omitempty"`
 	BatchSize       int    `json:"batchSize,omitempty"`
 	NumBatches      int    `json:"numBatches,omitempty"`
+	Offset          int64  `json:"offset,omitempty"`
+	ChunkSize       int64  `json:"chunkSize,omitempty"`
 	Message         string `json:"message,omitempty"`
 }
 
@@ -167,6 +172,8 @@ func (r *SplitFDStreamRequest) IsValid() error {
 				Data:    "layerId is required for get_splitfdstream",
 			}
 		}
+	case MethodLookupDigest:
+		// Validation is done in ParseLookupDigestParams
 	case MethodPing:
 		// No validation required for ping
 	default:
@@ -269,4 +276,38 @@ func ParsePingParams(params SplitFDStreamParams) (*PingParams, error) {
 	}
 
 	return &pingParams, nil
+}
+
+// LookupDigestParams represents parameters specific to lookup_digest method.
+type LookupDigestParams struct {
+	Digest string `json:"digest"`
+}
+
+// ParseLookupDigestParams parses the generic params as LookupDigestParams.
+func ParseLookupDigestParams(params SplitFDStreamParams) (*LookupDigestParams, error) {
+	// Merge Options into a flat map
+	flatMap := make(map[string]interface{})
+	for k, v := range params.Options {
+		flatMap[k] = v
+	}
+
+	data, err := json.Marshal(flatMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal params: %w", err)
+	}
+
+	var lookupParams LookupDigestParams
+	if err := json.Unmarshal(data, &lookupParams); err != nil {
+		return nil, fmt.Errorf("failed to parse lookup params: %w", err)
+	}
+
+	if lookupParams.Digest == "" {
+		return nil, &SplitFDStreamError{
+			Code:    ErrorCodeInvalidParams,
+			Message: "Invalid params",
+			Data:    "digest is required for lookup_digest",
+		}
+	}
+
+	return &lookupParams, nil
 }

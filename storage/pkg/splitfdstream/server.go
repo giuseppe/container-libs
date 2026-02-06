@@ -70,22 +70,35 @@ func (r *limitedSocketReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+// FileByDigestResult contains the result of looking up a file by its digest.
+type FileByDigestResult struct {
+	File   *os.File
+	Offset int64
+	Size   int64
+}
+
+// DigestLookupFunc is a function that looks up a file by its digest.
+// It returns the file descriptor, offset, and size if found.
+type DigestLookupFunc func(digest string) (*FileByDigestResult, error)
+
 // JSONRPCServer manages the JSON-RPC server for storage operations.
 type JSONRPCServer struct {
-	driver      any
-	listener    net.Listener
-	socketPath  string
-	shutdown    chan struct{}
-	connections sync.WaitGroup
-	mu          sync.RWMutex
-	running     bool
+	driver       any
+	digestLookup DigestLookupFunc
+	listener     net.Listener
+	socketPath   string
+	shutdown     chan struct{}
+	connections  sync.WaitGroup
+	mu           sync.RWMutex
+	running      bool
 }
 
 // NewJSONRPCServer creates a new JSON-RPC server.
-func NewJSONRPCServer(driver any) *JSONRPCServer {
+func NewJSONRPCServer(driver any, digestLookup DigestLookupFunc) *JSONRPCServer {
 	return &JSONRPCServer{
-		driver:   driver,
-		shutdown: make(chan struct{}),
+		driver:       driver,
+		digestLookup: digestLookup,
+		shutdown:     make(chan struct{}),
 	}
 }
 
@@ -268,6 +281,8 @@ func (s *JSONRPCServer) handleRequest(fdPasser *FDPasser, requestLine string) {
 		s.handleApplySplitFDStream(fdPasser, req)
 	case MethodGetSplitFDStream:
 		s.handleGetSplitFDStream(fdPasser, req)
+	case MethodLookupDigest:
+		s.handleLookupDigest(fdPasser, req)
 	default:
 		resp := NewErrorResponse(ErrorCodeMethodNotFound, "Method not found", req.Method, req.ID)
 		s.sendResponse(fdPasser, resp)
@@ -522,6 +537,71 @@ func (s *JSONRPCServer) handleGetSplitFDStream(fdPasser *FDPasser, req *SplitFDS
 			logrus.Errorf("splitfdstream: failed to send remaining stream data: %v", err)
 			return
 		}
+	}
+}
+
+// handleLookupDigest handles lookup_digest requests.
+// Protocol:
+// 1. Client sends JSON-RPC request with digest
+// 2. Server looks up the digest in the cache
+// 3. Server sends response with offset and size, plus the file descriptor
+func (s *JSONRPCServer) handleLookupDigest(fdPasser *FDPasser, req *SplitFDStreamRequest) {
+	// Parse the lookup-specific parameters
+	lookupParams, err := ParseLookupDigestParams(req.Params)
+	if err != nil {
+		resp := NewErrorResponse(ErrorCodeInvalidParams, err.Error(), nil, req.ID)
+		s.sendResponse(fdPasser, resp)
+		return
+	}
+
+	// Check if digest lookup is available
+	if s.digestLookup == nil {
+		resp := NewErrorResponse(
+			ErrorCodeStoreNotAvailable,
+			"digest lookup is not available",
+			nil,
+			req.ID,
+		)
+		s.sendResponse(fdPasser, resp)
+		return
+	}
+
+	// Look up the digest
+	result, err := s.digestLookup(lookupParams.Digest)
+	if err != nil {
+		resp := NewErrorResponse(ErrorCodeInternalError, fmt.Sprintf("failed to lookup digest: %v", err), nil, req.ID)
+		s.sendResponse(fdPasser, resp)
+		return
+	}
+
+	if result == nil {
+		resp := NewErrorResponse(
+			ErrorCodeDigestNotFound,
+			fmt.Sprintf("digest %s not found", lookupParams.Digest),
+			nil,
+			req.ID,
+		)
+		s.sendResponse(fdPasser, resp)
+		return
+	}
+
+	defer result.File.Close()
+
+	// Send success response with metadata
+	responseResult := &SplitFDStreamResult{
+		Offset:    result.Offset,
+		ChunkSize: result.Size,
+		Message:   "found",
+	}
+	numFDs := 1
+	responseResult.FileDescriptors = &numFDs
+	resp := NewSuccessResponse(responseResult, req.ID)
+	s.sendResponse(fdPasser, resp)
+
+	// Send the file descriptor
+	if err := fdPasser.SendFileDescriptors([]*os.File{result.File}, nil); err != nil {
+		logrus.Errorf("splitfdstream: failed to send file descriptor for digest lookup: %v", err)
+		return
 	}
 }
 
