@@ -791,6 +791,8 @@ type digestLookupResult struct {
 	Path string
 	// Offset is the offset within the file where the content starts.
 	Offset int64
+	// Size is the size of the content.
+	Size int64
 }
 
 func (c *layersCache) findDigestInternal(digest string) (*digestLookupResult, error) {
@@ -817,7 +819,7 @@ func (c *layersCache) findDigestInternal(digest string) (*digestLookupResult, er
 			}
 			fileLocationData := layer.cacheFile.vdata[off : off+tagLen]
 
-			fnamePosition, offFile, _, err := parseFileLocation(fileLocationData)
+			fnamePosition, offFile, lenFile, err := parseFileLocation(fileLocationData)
 			if err != nil {
 				return nil, fmt.Errorf("corrupted cache file for layer %q", layer.id)
 			}
@@ -836,6 +838,7 @@ func (c *layersCache) findDigestInternal(digest string) (*digestLookupResult, er
 				Target: layer.target,
 				Path:   path,
 				Offset: int64(offFile),
+				Size:   int64(lenFile),
 			}, nil
 		}
 	}
@@ -978,4 +981,69 @@ func unmarshalToc(manifest []byte) (*minimal.TOC, error) {
 	}
 
 	return &toc, nil
+}
+
+// FileByDigestResult contains the result of a file lookup by digest.
+type FileByDigestResult struct {
+	File   *os.File
+	Offset int64
+	Size   int64
+}
+
+// FindFileByDigest looks up a file or chunk by its digest in the layer cache.
+// It returns an open file descriptor, the offset within the file, and the size.
+// The caller is responsible for closing the returned file descriptor.
+func FindFileByDigest(store storage.Store, digest string) (*FileByDigestResult, error) {
+	cache, err := getLayersCache(store)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get layers cache: %w", err)
+	}
+
+	result, err := cache.findDigestInternal(digest)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, nil // Not found
+	}
+
+	// Construct the full path to the file
+	driver, err := store.GraphDriver()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get graph driver: %w", err)
+	}
+
+	layerPath, err := driver.Get(result.Target, graphdriver.MountOpts{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get layer path: %w", err)
+	}
+	defer func() { _ = driver.Put(result.Target) }()
+
+	// Open the layer directory first
+	layerDirFd, err := unix.Open(layerPath, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open layer directory: %w", err)
+	}
+	defer unix.Close(layerDirFd)
+
+	// Use Openat2 with RESOLVE_BENEATH to safely open the file within the layer directory
+	fd, err := unix.Openat2(layerDirFd, result.Path, &unix.OpenHow{
+		Flags:   unix.O_RDONLY | unix.O_CLOEXEC,
+		Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to open file: %w", err)
+	}
+
+	file := os.NewFile(uintptr(fd), result.Path)
+	if file == nil {
+		unix.Close(fd)
+		return nil, fmt.Errorf("failed to create File from fd")
+	}
+
+	return &FileByDigestResult{
+		File:   file,
+		Offset: result.Offset,
+		Size:   result.Size,
+	}, nil
 }
