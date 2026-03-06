@@ -226,16 +226,24 @@ func newTarSplitData(createZstdWriter minimal.CreateZstdWriterFunc) (*tarSplitDa
 	}, nil
 }
 
+// isCanonicalPAXRecord checks if a vbatts tar header has the CONTAINERS.canonical=1 PAX record.
+func isCanonicalPAXRecord(hdr *tar.Header) bool {
+	return hdr.PAXRecords != nil && hdr.PAXRecords["CONTAINERS.canonical"] == "1"
+}
+
 func writeZstdChunkedStream(destFile io.Writer, outMetadata map[string]string, reader io.Reader, createZstdWriter minimal.CreateZstdWriterFunc) error {
 	// total written so far.  Used to retrieve partial offsets in the file
 	dest := ioutils.NewWriteCounter(destFile)
 
+	// We start by setting up tarsplit capture. If the first entry has
+	// the canonical PAX record, we switch to v2 mode (no tarsplit).
+	// Otherwise, we continue with v1 (tarsplit captured).
 	tarSplitData, err := newTarSplitData(createZstdWriter)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		if tarSplitData.zstd != nil {
+		if tarSplitData != nil && tarSplitData.zstd != nil {
 			tarSplitData.zstd.Close()
 		}
 	}()
@@ -272,6 +280,9 @@ func writeZstdChunkedStream(destFile io.Writer, outMetadata map[string]string, r
 		return offset, nil
 	}
 
+	isCanonical := false
+	firstEntry := true
+
 	var metadata []minimal.FileMetadata
 	for {
 		hdr, err := tr.Next()
@@ -280,6 +291,12 @@ func writeZstdChunkedStream(destFile io.Writer, outMetadata map[string]string, r
 				break
 			}
 			return err
+		}
+
+		// Detect canonical format from the first entry's PAX records.
+		if firstEntry {
+			isCanonical = isCanonicalPAXRecord(hdr)
+			firstEntry = false
 		}
 
 		rawBytes := tr.RawBytes()
@@ -408,6 +425,16 @@ func writeZstdChunkedStream(destFile io.Writer, outMetadata map[string]string, r
 	}
 	zstdWriter = nil
 
+	if isCanonical {
+		// v2 path: no tarsplit data
+		if tarSplitData.zstd != nil {
+			tarSplitData.zstd.Close()
+			tarSplitData.zstd = nil
+		}
+		return minimal.WriteZstdChunkedManifest(dest, outMetadata, uint64(dest.Count), nil, metadata, createZstdWriter)
+	}
+
+	// v1 path: include tarsplit data
 	if err := tarSplitData.zstd.Close(); err != nil {
 		return err
 	}
