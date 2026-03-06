@@ -546,6 +546,12 @@ func (ic *imageCopier) copyLayers(ctx context.Context) ([]compressiontypes.Algor
 	if ic.diffIDsAreNeeded {
 		ic.manifestUpdates.InformationOnly.LayerDiffIDs = diffIDs
 	}
+	// If any layer was compressed with zstd:chunked (canonical tar), the compressor
+	// may have changed the uncompressed content, so the DiffIDs in the config need
+	// updating.  Set LayerDiffIDs so that UpdatedImage can update the config.
+	if !ic.diffIDsAreNeeded && slices.ContainsFunc(diffIDs, func(d digest.Digest) bool { return d != "" }) {
+		ic.manifestUpdates.InformationOnly.LayerDiffIDs = diffIDs
+	}
 	if srcInfosUpdated || layerDigestsDiffer(srcInfos, destInfos) {
 		ic.manifestUpdates.LayerInfos = destInfos
 	}
@@ -880,6 +886,15 @@ func (ic *imageCopier) copyLayer(ctx context.Context, srcInfo types.BlobInfo, to
 				}
 				diffID = diffIDResult.digest
 			}
+		}
+
+		// If the compressor reported a canonical uncompressed digest (v2 zstd:chunked),
+		// use it as the DiffID. The compressor canonicalizes tar headers, so the
+		// uncompressed content of the blob differs from the input; the canonical
+		// digest is what partial-pull consumers will compute.
+		if canonicalDigest, ok := chunkedToc.GetUncompressedDigest(blobInfo.Annotations); ok {
+			logrus.Debugf("Using canonical DiffID %s (from compressor) for layer %s", canonicalDigest, srcInfo.Digest)
+			diffID = canonicalDigest
 		}
 
 		bar.mark100PercentComplete()

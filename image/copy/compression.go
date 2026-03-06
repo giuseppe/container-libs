@@ -339,23 +339,38 @@ func (d *bpCompressionStepData) recordValidatedDigestData(c *copier, uploadedInf
 		case bpcOpPreserveOpaque:
 			// No useful information
 		case bpcOpCompressUncompressed:
-			c.blobInfoCache.RecordDigestUncompressedPair(uploadedInfo.Digest, srcInfo.Digest)
+			// If the compressor reported a canonical uncompressed digest (v2 zstd:chunked),
+			// use it instead of srcInfo.Digest for cache entries. The canonical digest
+			// is the true uncompressed content of the blob after header canonicalization.
+			uncompressedDigest := srcInfo.Digest
+			if d.uploadedAnnotations != nil {
+				if canonicalDigest, ok := chunkedToc.GetUncompressedDigest(d.uploadedAnnotations); ok {
+					uncompressedDigest = canonicalDigest
+				}
+			}
+			c.blobInfoCache.RecordDigestUncompressedPair(uploadedInfo.Digest, uncompressedDigest)
 			if d.uploadedAnnotations != nil {
 				tocDigest, err := chunkedToc.GetTOCDigest(d.uploadedAnnotations)
 				if err != nil {
 					return fmt.Errorf("parsing just-created compression annotations: %w", err)
 				}
 				if tocDigest != nil {
-					c.blobInfoCache.RecordTOCUncompressedPair(*tocDigest, srcInfo.Digest)
+					c.blobInfoCache.RecordTOCUncompressedPair(*tocDigest, uncompressedDigest)
 				}
 			}
 		case bpcOpDecompressCompressed:
 			c.blobInfoCache.RecordDigestUncompressedPair(srcInfo.Digest, uploadedInfo.Digest)
 		case bpcOpRecompressCompressed, bpcOpPreserveCompressed:
 			// We know one or two compressed digests. BlobInfoCache associates compression variants via the uncompressed digest,
-			// and we don’t know that one.
-			// That also means that repeated copies with the same recompression don’t identify reuse opportunities (unless
-			// RecordDigestUncompressedPair was called for both compressed variants for some other reason).
+			// and we don’t know that one — unless the compressor reports a canonical uncompressed digest.
+			if d.uploadedAnnotations != nil {
+				if canonicalDigest, ok := chunkedToc.GetUncompressedDigest(d.uploadedAnnotations); ok {
+					c.blobInfoCache.RecordDigestUncompressedPair(uploadedInfo.Digest, canonicalDigest)
+					if tocDigest, err := chunkedToc.GetTOCDigest(d.uploadedAnnotations); err == nil && tocDigest != nil {
+						c.blobInfoCache.RecordTOCUncompressedPair(*tocDigest, canonicalDigest)
+					}
+				}
+			}
 		case bpcOpPreserveUncompressed:
 			c.blobInfoCache.RecordDigestUncompressedPair(srcInfo.Digest, srcInfo.Digest)
 		case bpcOpInvalid:

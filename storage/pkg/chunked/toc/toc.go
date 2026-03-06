@@ -14,11 +14,28 @@ import (
 // The _only_ intended use of this set is: code that _changes_ layer compression to a format
 // which is not chunked can/should remove these annotations.
 var ChunkedAnnotations = map[string]struct{}{
-	minimal.ManifestChecksumKey: {},
-	minimal.ManifestInfoKey:     {},
-	minimal.TarSplitInfoKey:     {},
-	minimal.TarSplitChecksumKey: {}, //nolint:staticcheck // The field is deprecated, so removing it when changing compressionn is all the more desirable.
-	tocJSONDigestAnnotation:     {},
+	minimal.ManifestChecksumKey:  {},
+	minimal.ManifestInfoKey:      {},
+	minimal.TarSplitInfoKey:      {},
+	minimal.TarSplitChecksumKey:  {}, //nolint:staticcheck // The field is deprecated, so removing it when changing compressionn is all the more desirable.
+	minimal.UncompressedDigestKey: {},
+	tocJSONDigestAnnotation:      {},
+}
+
+// GetUncompressedDigest returns the canonical uncompressed tar digest
+// reported by the zstd:chunked compressor, if present.
+// For v2 zstd:chunked images this digest differs from the digest of the
+// original input because the compressor canonicalizes tar headers.
+func GetUncompressedDigest(annotations map[string]string) (digest.Digest, bool) {
+	v, ok := annotations[minimal.UncompressedDigestKey]
+	if !ok {
+		return "", false
+	}
+	d, err := digest.Parse(v)
+	if err != nil {
+		return "", false
+	}
+	return d, true
 }
 
 // tocJSONDigestAnnotation is the annotation key for the digest of the estargz

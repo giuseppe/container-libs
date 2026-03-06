@@ -6,13 +6,10 @@ package compressor
 
 import (
 	"bufio"
-	"bytes"
 	"io"
 
 	"github.com/opencontainers/go-digest"
 	"github.com/vbatts/tar-split/archive/tar"
-	"github.com/vbatts/tar-split/tar/asm"
-	"github.com/vbatts/tar-split/tar/storage"
 	"go.podman.io/storage/pkg/chunked/internal/minimal"
 	"go.podman.io/storage/pkg/ioutils"
 )
@@ -197,58 +194,20 @@ type chunk struct {
 	ChunkType   string
 }
 
-type tarSplitData struct {
-	compressed          *bytes.Buffer
-	digester            digest.Digester
-	uncompressedCounter *ioutils.WriteCounter
-	zstd                minimal.ZstdWriter
-	packer              storage.Packer
-}
-
-func newTarSplitData(createZstdWriter minimal.CreateZstdWriterFunc) (*tarSplitData, error) {
-	compressed := bytes.NewBuffer(nil)
-	digester := digest.Canonical.Digester()
-
-	zstdWriter, err := createZstdWriter(io.MultiWriter(compressed, digester.Hash()))
-	if err != nil {
-		return nil, err
-	}
-
-	uncompressedCounter := ioutils.NewWriteCounter(zstdWriter)
-	metaPacker := storage.NewJSONPacker(uncompressedCounter)
-
-	return &tarSplitData{
-		compressed:          compressed,
-		digester:            digester,
-		uncompressedCounter: uncompressedCounter,
-		zstd:                zstdWriter,
-		packer:              metaPacker,
-	}, nil
-}
-
 func writeZstdChunkedStream(destFile io.Writer, outMetadata map[string]string, reader io.Reader, createZstdWriter minimal.CreateZstdWriterFunc) error {
 	// total written so far.  Used to retrieve partial offsets in the file
 	dest := ioutils.NewWriteCounter(destFile)
 
-	tarSplitData, err := newTarSplitData(createZstdWriter)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if tarSplitData.zstd != nil {
-			tarSplitData.zstd.Close()
-		}
-	}()
-
-	its, err := asm.NewInputTarStream(reader, tarSplitData.packer, nil)
-	if err != nil {
-		return err
-	}
-
-	tr := tar.NewReader(its)
-	tr.RawAccounting = true
+	tr := tar.NewReader(reader)
 
 	buf := make([]byte, 4096)
+
+	// Compute the digest of the canonical uncompressed tar stream.
+	// The compressor canonicalizes tar headers, so the uncompressed
+	// content in the blob differs from the original input.  This
+	// digest is reported via UncompressedDigestKey so that c/image
+	// can use it as the layer DiffID in the image config.
+	canonicalDigester := digest.Canonical.Digester()
 
 	zstdWriter, err := createZstdWriter(dest)
 	if err != nil {
@@ -282,10 +241,15 @@ func writeZstdChunkedStream(destFile io.Writer, outMetadata map[string]string, r
 			return err
 		}
 
-		rawBytes := tr.RawBytes()
-		if _, err := zstdWriter.Write(rawBytes); err != nil {
+		// Generate canonical header bytes instead of using the original raw bytes.
+		canonicalBytes, err := minimal.CanonicalHeaderBytes(hdr)
+		if err != nil {
 			return err
 		}
+		if _, err := zstdWriter.Write(canonicalBytes); err != nil {
+			return err
+		}
+		canonicalDigester.Hash().Write(canonicalBytes)
 
 		payloadDigester := digest.Canonical.Digester()
 		chunkDigester := digest.Canonical.Digester()
@@ -309,7 +273,7 @@ func writeZstdChunkedStream(destFile io.Writer, outMetadata map[string]string, r
 			rollsum: NewRollSum(),
 		}
 
-		payloadDest := io.MultiWriter(payloadDigester.Hash(), chunkDigester.Hash(), zstdWriter)
+		payloadDest := io.MultiWriter(payloadDigester.Hash(), chunkDigester.Hash(), zstdWriter, canonicalDigester.Hash())
 		for {
 			mustSplit, read, errRead := rcReader.Read(buf)
 			if errRead != nil && errRead != io.EOF {
@@ -354,13 +318,25 @@ func writeZstdChunkedStream(destFile io.Writer, outMetadata map[string]string, r
 				lastOffset = off
 				lastChunkOffset = rcReader.WrittenOut
 				chunkDigester = digest.Canonical.Digester()
-				payloadDest = io.MultiWriter(payloadDigester.Hash(), chunkDigester.Hash(), zstdWriter)
+				payloadDest = io.MultiWriter(payloadDigester.Hash(), chunkDigester.Hash(), zstdWriter, canonicalDigester.Hash())
 			}
 			if errRead == io.EOF {
 				if startOffset > 0 {
 					checksum = payloadDigester.Digest().String()
 				}
 				break
+			}
+		}
+
+		// Write content padding to align to 512-byte boundary (tar format requirement).
+		if hdr.Size > 0 {
+			padding := (512 - (hdr.Size % 512)) % 512
+			if padding > 0 {
+				paddingBytes := make([]byte, padding)
+				if _, err := zstdWriter.Write(paddingBytes); err != nil {
+					return err
+				}
+				canonicalDigester.Hash().Write(paddingBytes)
 			}
 		}
 
@@ -390,47 +366,33 @@ func writeZstdChunkedStream(destFile io.Writer, outMetadata map[string]string, r
 		metadata = append(metadata, entries...)
 	}
 
-	rawBytes := tr.RawBytes()
-	if _, err := zstdWriter.Write(rawBytes); err != nil {
+	// Write the canonical end-of-archive marker.
+	endOfArchive := minimal.CanonicalEndOfArchive()
+	if _, err := zstdWriter.Write(endOfArchive); err != nil {
 		zstdWriter.Close()
 		return err
 	}
-
-	// make sure the entire tarball is flushed to the output as it might contain
-	// some trailing zeros that affect the checksum.
-	if _, err := io.Copy(zstdWriter, its); err != nil {
-		zstdWriter.Close()
-		return err
-	}
+	canonicalDigester.Hash().Write(endOfArchive)
 
 	if err := zstdWriter.Close(); err != nil {
 		return err
 	}
 	zstdWriter = nil
 
-	if err := tarSplitData.zstd.Close(); err != nil {
-		return err
-	}
-	tarSplitData.zstd = nil
+	outMetadata[minimal.UncompressedDigestKey] = canonicalDigester.Digest().String()
 
-	ts := minimal.TarSplitData{
-		Data:             tarSplitData.compressed.Bytes(),
-		Digest:           tarSplitData.digester.Digest(),
-		UncompressedSize: tarSplitData.uncompressedCounter.Count,
-	}
-
-	return minimal.WriteZstdChunkedManifest(dest, outMetadata, uint64(dest.Count), &ts, metadata, createZstdWriter)
+	return minimal.WriteZstdChunkedManifest(dest, outMetadata, uint64(dest.Count), nil, metadata, createZstdWriter)
 }
 
 type zstdChunkedWriter struct {
-	tarSplitOut *io.PipeWriter
-	tarSplitErr chan error
+	pipeWriter *io.PipeWriter
+	errCh      chan error
 }
 
 func (w zstdChunkedWriter) Close() error {
-	errClose := w.tarSplitOut.Close()
+	errClose := w.pipeWriter.Close()
 
-	if err := <-w.tarSplitErr; err != nil && err != io.EOF {
+	if err := <-w.errCh; err != nil && err != io.EOF {
 		return err
 	}
 	return errClose
@@ -438,11 +400,11 @@ func (w zstdChunkedWriter) Close() error {
 
 func (w zstdChunkedWriter) Write(p []byte) (int, error) {
 	select {
-	case err := <-w.tarSplitErr:
-		w.tarSplitOut.Close()
+	case err := <-w.errCh:
+		w.pipeWriter.Close()
 		return 0, err
 	default:
-		return w.tarSplitOut.Write(p)
+		return w.pipeWriter.Write(p)
 	}
 }
 
@@ -473,8 +435,8 @@ func makeZstdChunkedWriter(out io.Writer, metadata map[string]string, createZstd
 	}()
 
 	return zstdChunkedWriter{
-		tarSplitOut: w,
-		tarSplitErr: ch,
+		pipeWriter: w,
+		errCh:      ch,
 	}, nil
 }
 
