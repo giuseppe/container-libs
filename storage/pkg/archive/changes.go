@@ -60,7 +60,7 @@ func (change *Change) String() string {
 // changesByPath implements sort.Interface.
 type changesByPath []Change
 
-func (c changesByPath) Less(i, j int) bool { return c[i].Path < c[j].Path }
+func (c changesByPath) Less(i, j int) bool { return ComparePathComponents(c[i].Path, c[j].Path) < 0 }
 func (c changesByPath) Len() int           { return len(c) }
 func (c changesByPath) Swap(i, j int)      { c[j], c[i] = c[i], c[j] }
 
