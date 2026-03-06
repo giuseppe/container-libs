@@ -195,10 +195,18 @@ func WriteZstdChunkedManifest(dest io.Writer, outMetadata map[string]string, off
 	const zstdSkippableFrameHeader = 8
 	manifestOffset := offset + zstdSkippableFrameHeader
 
+	tocVersion := 1
+	var tarSplitDigest digest.Digest
+	if tarSplitData != nil {
+		tarSplitDigest = tarSplitData.Digest
+	} else {
+		tocVersion = 2
+	}
+
 	toc := TOC{
-		Version:        1,
+		Version:        tocVersion,
 		Entries:        metadata,
-		TarSplitDigest: tarSplitData.Digest,
+		TarSplitDigest: tarSplitDigest,
 	}
 
 	json := jsoniter.ConfigCompatibleWithStandardLibrary
@@ -234,20 +242,22 @@ func WriteZstdChunkedManifest(dest io.Writer, outMetadata map[string]string, off
 		return err
 	}
 
-	tarSplitOffset := manifestOffset + uint64(len(compressedManifest)) + zstdSkippableFrameHeader
-	outMetadata[TarSplitInfoKey] = fmt.Sprintf("%d:%d:%d", tarSplitOffset, len(tarSplitData.Data), tarSplitData.UncompressedSize)
-	if err := appendZstdSkippableFrame(dest, tarSplitData.Data); err != nil {
-		return err
+	footer := ZstdChunkedFooterData{
+		ManifestType:       uint64(ManifestTypeCRFS),
+		Offset:             manifestOffset,
+		LengthCompressed:   uint64(len(compressedManifest)),
+		LengthUncompressed: uint64(len(manifest)),
 	}
 
-	footer := ZstdChunkedFooterData{
-		ManifestType:               uint64(ManifestTypeCRFS),
-		Offset:                     manifestOffset,
-		LengthCompressed:           uint64(len(compressedManifest)),
-		LengthUncompressed:         uint64(len(manifest)),
-		OffsetTarSplit:             tarSplitOffset,
-		LengthCompressedTarSplit:   uint64(len(tarSplitData.Data)),
-		LengthUncompressedTarSplit: uint64(tarSplitData.UncompressedSize),
+	if tarSplitData != nil {
+		tarSplitOffset := manifestOffset + uint64(len(compressedManifest)) + zstdSkippableFrameHeader
+		outMetadata[TarSplitInfoKey] = fmt.Sprintf("%d:%d:%d", tarSplitOffset, len(tarSplitData.Data), tarSplitData.UncompressedSize)
+		if err := appendZstdSkippableFrame(dest, tarSplitData.Data); err != nil {
+			return err
+		}
+		footer.OffsetTarSplit = tarSplitOffset
+		footer.LengthCompressedTarSplit = uint64(len(tarSplitData.Data))
+		footer.LengthUncompressedTarSplit = uint64(tarSplitData.UncompressedSize)
 	}
 
 	manifestDataLE := footerDataToBlob(footer)
@@ -332,4 +342,98 @@ func NewFileMetadata(hdr *tar.Header) (FileMetadata, error) {
 		Devminor:   hdr.Devminor,
 		Xattrs:     xattrs,
 	}, nil
+}
+
+var typeStringToTar = map[string]byte{
+	TypeReg:     tar.TypeReg,
+	TypeLink:    tar.TypeLink,
+	TypeChar:    tar.TypeChar,
+	TypeBlock:   tar.TypeBlock,
+	TypeDir:     tar.TypeDir,
+	TypeFifo:    tar.TypeFifo,
+	TypeSymlink: tar.TypeSymlink,
+}
+
+// FileMetadataToCanonicalTarHeader converts a FileMetadata TOC entry to a
+// canonical tar header (using the vbatts tar package). The resulting header
+// has all canonical normalization applied.
+func FileMetadataToCanonicalTarHeader(fm *FileMetadata) (*tar.Header, error) {
+	typeflag, ok := typeStringToTar[fm.Type]
+	if !ok {
+		return nil, fmt.Errorf("unknown file type %q for %q", fm.Type, fm.Name)
+	}
+
+	hdr := &tar.Header{
+		Typeflag: typeflag,
+		Name:     fm.Name,
+		Linkname: fm.Linkname,
+		Mode:     fm.Mode & 0o7777,
+		Size:     fm.Size,
+		Uid:      fm.UID,
+		Gid:      fm.GID,
+		Devmajor: fm.Devmajor,
+		Devminor: fm.Devminor,
+		Format:   tar.FormatPAX,
+	}
+
+	if fm.ModTime != nil {
+		hdr.ModTime = *fm.ModTime
+	}
+	// AccessTime and ChangeTime are zeroed in canonical format.
+
+	if typeflag == tar.TypeLink {
+		hdr.Size = 0
+	}
+
+	// Build PAX records with canonical marker and xattrs
+	paxRecords := map[string]string{
+		"CONTAINERS.canonical": "1",
+	}
+	for k, v := range fm.Xattrs {
+		decoded, err := base64.StdEncoding.DecodeString(v)
+		if err != nil {
+			return nil, fmt.Errorf("decoding xattr %q: %w", k, err)
+		}
+		paxRecords[archive.PaxSchilyXattr+k] = string(decoded)
+	}
+	hdr.PAXRecords = paxRecords
+
+	return hdr, nil
+}
+
+// WriteCanonicalTar writes canonical tar entries for the given TOC metadata
+// to dest. For each regular file entry, it calls fileContentFn to get the
+// file content reader. Chunk entries (TypeChunk) are skipped.
+func WriteCanonicalTar(dest io.Writer, entries []FileMetadata, fileContentFn func(name string) (io.ReadCloser, error)) error {
+	tw := tar.NewWriter(dest)
+	defer tw.Close()
+
+	for i := range entries {
+		if entries[i].Type == TypeChunk {
+			continue
+		}
+
+		hdr, err := FileMetadataToCanonicalTarHeader(&entries[i])
+		if err != nil {
+			return fmt.Errorf("converting TOC entry %q to tar header: %w", entries[i].Name, err)
+		}
+
+		if err := tw.WriteHeader(hdr); err != nil {
+			return fmt.Errorf("writing tar header for %q: %w", entries[i].Name, err)
+		}
+
+		if hdr.Typeflag == tar.TypeReg && hdr.Size > 0 {
+			rc, err := fileContentFn(entries[i].Name)
+			if err != nil {
+				return fmt.Errorf("getting content for %q: %w", entries[i].Name, err)
+			}
+			if _, err := io.Copy(tw, rc); err != nil {
+				rc.Close()
+				return fmt.Errorf("writing content for %q: %w", entries[i].Name, err)
+			}
+			rc.Close()
+		}
+	}
+
+	return tw.Close()
 }
