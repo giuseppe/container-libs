@@ -2389,6 +2389,12 @@ func (r *layerStore) Diff(from, to string, options *DiffOptions) (io.ReadCloser,
 		if err != nil {
 			return nil, err
 		}
+		// For v2 layers (identified by having a TOCDigest but no tarsplit file),
+		// wrap the driver diff output with a canonical tar filter so that Diff()
+		// produces deterministic output matching the canonical format.
+		if toLayer.TOCDigest != "" {
+			diff = archive.NewCanonicalTarFilter(diff)
+		}
 		return maybeCompressReadCloser(diff)
 	}
 
