@@ -2385,28 +2385,9 @@ func (r *layerStore) Diff(from, to string, options *DiffOptions) (io.ReadCloser,
 		if !os.IsNotExist(err) {
 			return nil, err
 		}
-
-		// For v2 zstd:chunked layers (identified by having a TOCDigest
-		// and no tarsplit file), reconstruct the canonical tar from the
-		// stored TOC to ensure the same entry order as during pull.
-		if toLayer.TOCDigest != "" {
-			tocReader, err := r.BigData(to, archive.CanonicalTOCBigDataKey)
-			if err == nil {
-				return r.diffFromCanonicalTOC(to, tocReader, compression, maybeCompressReadCloser)
-			}
-			// If the TOC BigData doesn't exist (e.g. old v2 layer without it),
-			// fall through to the canonical filter approach below.
-		}
-
 		diff, err := r.driver.Diff(to, r.layerMappings(toLayer), from, r.layerMappings(fromLayer), toLayer.MountLabel)
 		if err != nil {
 			return nil, err
-		}
-		// Fallback for v2 layers without stored TOC: filter through
-		// CanonicalizeTarHeader. Note: this may produce different entry
-		// ordering than the pull-time digest computation.
-		if toLayer.TOCDigest != "" {
-			diff = newCanonicalTarFilter(diff)
 		}
 		return maybeCompressReadCloser(diff)
 	}
@@ -2456,30 +2437,6 @@ func (r *layerStore) Diff(from, to string, options *DiffOptions) (io.ReadCloser,
 		return nil
 	})
 	return maybeCompressReadCloser(rc)
-}
-
-// diffFromCanonicalTOC reconstructs the canonical tar stream from a stored
-// TOC and the layer's filesystem contents. This ensures the exact same entry
-// order and headers as were used to compute the UncompressedDigest during pull.
-//
-// LOCKING BUG: With btrfs and zfs graph drivers, this uses r.Mount() and r.unmount()
-// holding layerStore only locked for reading but they modify in-memory state.
-func (r *layerStore) diffFromCanonicalTOC(layerID string, tocReader io.ReadCloser, compression archive.Compression, maybeCompressReadCloser func(io.ReadCloser) (io.ReadCloser, error)) (io.ReadCloser, error) {
-	fgetter, err := r.newFileGetter(layerID)
-	if err != nil {
-		tocReader.Close()
-		return nil, err
-	}
-
-	pr, pw := io.Pipe()
-	go func() {
-		err := archive.WriteCanonicalTar(tocReader, fgetter, pw)
-		tocReader.Close()
-		fgetter.Close()
-		pw.CloseWithError(err) //nolint:errcheck
-	}()
-
-	return maybeCompressReadCloser(pr)
 }
 
 // Requires startReading or startWriting.

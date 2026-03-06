@@ -361,16 +361,6 @@ func makeZstdChunkedDiffer(store storage.Store, blobSize int64, tocDigest digest
 		if err != nil {
 			return nil, fmt.Errorf("computing size from tar-split: %w", err)
 		}
-	} else if toc.Version >= 2 {
-		// v2 TOCs use canonical tar format; validate that entries are sorted.
-		if err := validateTOCEntriesOrder(toc.Entries); err != nil {
-			return nil, err
-		}
-		// We can compute size from the TOC alone.
-		uncompressedTarSize, err = tarSizeFromTOC(toc.Entries)
-		if err != nil {
-			return nil, fmt.Errorf("computing size from TOC: %w", err)
-		}
 	} else if !pullOptions.insecureAllowUnpredictableImageContents { // With no tar-split, we can't compute the traditional UncompressedDigest.
 		return nil, errFallbackCanConvert{
 			newErrFallbackToOrdinaryLayerDownload(fmt.Errorf("zstd:chunked layers without tar-split data don't support partial pulls with guaranteed consistency with non-partial pulls")),
@@ -1891,20 +1881,6 @@ func (c *chunkedDiffer) ApplyDiff(dest string, options *archive.TarOptions, diff
 				return output, fmt.Errorf("digesting staged uncompressed stream: %w", err)
 			}
 			output.UncompressedDigest = digester.Digest()
-		case c.toc != nil && c.toc.Version >= 2:
-			fg := newStagedFileGetter(dirFile, flatPathNameMap)
-			digester := digest.Canonical.Digester()
-			if err := minimal.WriteCanonicalTar(c.toc, fg, digester.Hash()); err != nil {
-				return output, fmt.Errorf("digesting canonical tar stream: %w", err)
-			}
-			output.UncompressedDigest = digester.Digest()
-
-			// Save the TOC as BigData so that Diff() can reconstruct the
-			// canonical tar in the same entry order during push.
-			if output.BigData == nil {
-				output.BigData = make(map[string][]byte)
-			}
-			output.BigData[archive.CanonicalTOCBigDataKey] = c.manifest
 		default:
 			// We are checking for this earlier in NewDiffer, so this should not be reachable.
 			return output, fmt.Errorf(`internal error: layer's UncompressedDigest is unknown and "insecure_allow_unpredictable_image_contents" is not set`)

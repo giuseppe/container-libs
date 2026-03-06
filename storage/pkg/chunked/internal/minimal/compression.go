@@ -10,7 +10,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"path"
 	"strings"
 	"time"
 
@@ -34,8 +33,7 @@ type CreateZstdWriterFunc func(dest io.Writer) (ZstdWriter, error)
 // file format to effectively add an overall index into the contents
 // of a tarball; it also includes file metadata.
 type TOC struct {
-	// Version is 1 for traditional zstd:chunked (with tarsplit) and 2 for
-	// canonical tar format (without tarsplit).
+	// Version is currently expected to be 1
 	Version int `json:"version"`
 	// Entries is the list of file metadata in this TOC.
 	// The ordering in this array currently defaults to being the same
@@ -131,101 +129,6 @@ func GetType(t byte) (string, error) {
 	return r, nil
 }
 
-// TypeToTarType converts a TOC type string back to a tar typeflag byte.
-func TypeToTarType(t string) (byte, error) {
-	for k, v := range TarTypes {
-		if v == t {
-			return k, nil
-		}
-	}
-	return 0, fmt.Errorf("unknown type: %v", t)
-}
-
-// FileMetadataToCanonicalTarHeader converts a FileMetadata entry to a
-// canonical tar.Header suitable for writing a reproducible tar stream.
-func FileMetadataToCanonicalTarHeader(e *FileMetadata) (*tar.Header, error) {
-	typeflag, err := TypeToTarType(e.Type)
-	if err != nil {
-		return nil, fmt.Errorf("converting type for %q: %w", e.Name, err)
-	}
-
-	hdr := &tar.Header{
-		Typeflag: typeflag,
-		Name:     e.Name,
-		Linkname: e.Linkname,
-		Size:     e.Size,
-		Mode:     e.Mode,
-		Uid:      e.UID,
-		Gid:      e.GID,
-		Devmajor: e.Devmajor,
-		Devminor: e.Devminor,
-	}
-
-	if e.ModTime != nil {
-		hdr.ModTime = *e.ModTime
-	}
-	// AccessTime and ChangeTime are intentionally not set;
-	// CanonicalizeTarHeader zeros them because they can't be reliably
-	// preserved across extract/re-tar cycles.
-
-	hdr.PAXRecords = make(map[string]string)
-	for k, v := range e.Xattrs {
-		decoded, err := base64.StdEncoding.DecodeString(v)
-		if err != nil {
-			return nil, fmt.Errorf("decoding xattr %q for %q: %w", k, e.Name, err)
-		}
-		hdr.PAXRecords[archive.PaxSchilyXattr+k] = string(decoded)
-	}
-
-	CanonicalizeTarHeader(hdr)
-	return hdr, nil
-}
-
-// WriteCanonicalTar writes a canonical tar stream from TOC entries and a
-// FileGetter that provides file contents. It produces deterministic output
-// suitable for computing DiffIDs without tarsplit data.
-func WriteCanonicalTar(toc *TOC, fg FileGetter, w io.Writer) error {
-	tw := tar.NewWriter(w)
-
-	for i := range toc.Entries {
-		e := &toc.Entries[i]
-
-		// TypeChunk entries are sub-file chunks; they don't correspond to
-		// separate tar entries.
-		if e.Type == TypeChunk {
-			continue
-		}
-
-		hdr, err := FileMetadataToCanonicalTarHeader(e)
-		if err != nil {
-			return err
-		}
-
-		if err := tw.WriteHeader(hdr); err != nil {
-			return fmt.Errorf("writing tar header for %q: %w", e.Name, err)
-		}
-
-		if hdr.Size > 0 {
-			rc, err := fg.Get(e.Name)
-			if err != nil {
-				return fmt.Errorf("getting file %q: %w", e.Name, err)
-			}
-			if _, err := io.Copy(tw, rc); err != nil {
-				rc.Close()
-				return fmt.Errorf("writing file content for %q: %w", e.Name, err)
-			}
-			rc.Close()
-		}
-	}
-
-	return tw.Close()
-}
-
-// FileGetter is an interface for retrieving file contents by name.
-type FileGetter interface {
-	Get(filename string) (io.ReadCloser, error)
-}
-
 const (
 	// ManifestChecksumKey is a hexadecimal sha256 digest of the compressed manifest digest.
 	ManifestChecksumKey = "io.github.containers.zstd-chunked.manifest-checksum"
@@ -246,14 +149,6 @@ const (
 	//
 	// Deprecated: This field should never be relied on - use the digest in the TOC instead.
 	TarSplitChecksumKey = "io.github.containers.zstd-chunked.tarsplit-checksum"
-
-	// UncompressedDigestKey is an annotation containing the digest of the
-	// canonical uncompressed tar stream produced by the compressor.
-	// For v2 zstd:chunked images, the compressor canonicalizes tar headers,
-	// so the uncompressed content inside the blob differs from the original
-	// input. This annotation allows the caller (e.g. c/image) to use the
-	// correct DiffID for the image config.
-	UncompressedDigestKey = "io.github.containers.zstd-chunked.uncompressed-digest"
 
 	// ManifestTypeCRFS is a manifest file compatible with the CRFS TOC file.
 	ManifestTypeCRFS = 1
@@ -300,18 +195,10 @@ func WriteZstdChunkedManifest(dest io.Writer, outMetadata map[string]string, off
 	const zstdSkippableFrameHeader = 8
 	manifestOffset := offset + zstdSkippableFrameHeader
 
-	tocVersion := 1
-	var tarSplitDigest digest.Digest
-	if tarSplitData != nil {
-		tarSplitDigest = tarSplitData.Digest
-	} else {
-		tocVersion = 2
-	}
-
 	toc := TOC{
-		Version:        tocVersion,
+		Version:        1,
 		Entries:        metadata,
-		TarSplitDigest: tarSplitDigest,
+		TarSplitDigest: tarSplitData.Digest,
 	}
 
 	json := jsoniter.ConfigCompatibleWithStandardLibrary
@@ -347,17 +234,10 @@ func WriteZstdChunkedManifest(dest io.Writer, outMetadata map[string]string, off
 		return err
 	}
 
-	var tarSplitOffset uint64
-	var tarSplitCompressedLen int
-	var tarSplitUncompressedSize int64
-	if tarSplitData != nil {
-		tarSplitOffset = manifestOffset + uint64(len(compressedManifest)) + zstdSkippableFrameHeader
-		tarSplitCompressedLen = len(tarSplitData.Data)
-		tarSplitUncompressedSize = tarSplitData.UncompressedSize
-		outMetadata[TarSplitInfoKey] = fmt.Sprintf("%d:%d:%d", tarSplitOffset, tarSplitCompressedLen, tarSplitUncompressedSize)
-		if err := appendZstdSkippableFrame(dest, tarSplitData.Data); err != nil {
-			return err
-		}
+	tarSplitOffset := manifestOffset + uint64(len(compressedManifest)) + zstdSkippableFrameHeader
+	outMetadata[TarSplitInfoKey] = fmt.Sprintf("%d:%d:%d", tarSplitOffset, len(tarSplitData.Data), tarSplitData.UncompressedSize)
+	if err := appendZstdSkippableFrame(dest, tarSplitData.Data); err != nil {
+		return err
 	}
 
 	footer := ZstdChunkedFooterData{
@@ -366,8 +246,8 @@ func WriteZstdChunkedManifest(dest io.Writer, outMetadata map[string]string, off
 		LengthCompressed:           uint64(len(compressedManifest)),
 		LengthUncompressed:         uint64(len(manifest)),
 		OffsetTarSplit:             tarSplitOffset,
-		LengthCompressedTarSplit:   uint64(tarSplitCompressedLen),
-		LengthUncompressedTarSplit: uint64(tarSplitUncompressedSize),
+		LengthCompressedTarSplit:   uint64(len(tarSplitData.Data)),
+		LengthUncompressedTarSplit: uint64(tarSplitData.UncompressedSize),
 	}
 
 	manifestDataLE := footerDataToBlob(footer)
@@ -422,110 +302,6 @@ func timeIfNotZero(t *time.Time) *time.Time {
 	return t
 }
 
-const canonicalPAXRecordKey = "CONTAINERS.canonical"
-
-// canonicalizePath normalizes a tar entry path:
-//   - strips "./" prefix
-//   - cleans the path (removes double slashes, etc.)
-//   - ensures directories have a trailing "/"
-func canonicalizePath(name string, isDir bool) string {
-	// Strip leading "./" prefix.
-	name = strings.TrimPrefix(name, "./")
-	// Clean the path but preserve trailing slash for directories.
-	cleaned := path.Clean(name)
-	if cleaned == "." {
-		cleaned = ""
-	}
-	if isDir && cleaned != "" && !strings.HasSuffix(cleaned, "/") {
-		cleaned += "/"
-	}
-	return cleaned
-}
-
-// CanonicalizeTarHeader normalizes a tar header so that the same metadata
-// always produces the same binary tar output. This is the foundation for
-// eliminating tarsplit from zstd:chunked images.
-//
-// Rules:
-//   - Always PAX format
-//   - Path normalized (no "./" prefix, directories have trailing "/")
-//   - Uname/Gname always empty (irrelevant for containers)
-//   - AccessTime/ChangeTime zeroed (ctime is kernel-managed and cannot be
-//     preserved across extract/re-tar cycles; atime is also unreliable)
-//   - Only SCHILY.xattr.* PAX records are preserved
-//   - A non-basic PAX record is added to force PAX format
-//   - Mode stripped to permission + setuid/setgid/sticky bits (no file type bits)
-//   - Hardlink size is set to 0
-func CanonicalizeTarHeader(hdr *tar.Header) {
-	hdr.Format = tar.FormatPAX
-	hdr.Uname = ""
-	hdr.Gname = ""
-
-	// Normalize paths so that the same entry always produces
-	// the same header bytes regardless of how the tar was created.
-	isDir := hdr.Typeflag == tar.TypeDir
-	hdr.Name = canonicalizePath(hdr.Name, isDir)
-	if hdr.Linkname != "" {
-		hdr.Linkname = canonicalizePath(hdr.Linkname, false)
-	}
-
-	// Strip file type bits from Mode, keeping only permission + setuid/setgid/sticky.
-	// Go's tar.Reader preserves file type bits from the archive (e.g. 040755 for dirs),
-	// but tar.FileInfoHeader (used when creating tar from filesystem) only sets
-	// permission bits since Go 1.9.  Normalizing avoids mismatches.
-	hdr.Mode &= 0o7777
-
-	// Zero out timestamps that can't be reliably preserved on the filesystem.
-	// ChangeTime (ctime) is always set by the kernel when inode metadata changes,
-	// so it will differ after extraction. AccessTime is also unreliable (depends
-	// on mount options like noatime/relatime).
-	hdr.AccessTime = time.Time{}
-	hdr.ChangeTime = time.Time{}
-
-	if hdr.PAXRecords == nil {
-		hdr.PAXRecords = make(map[string]string)
-	}
-
-	// Keep only SCHILY.xattr.* records; drop everything else.
-	for k := range hdr.PAXRecords {
-		if !strings.HasPrefix(k, archive.PaxSchilyXattr) {
-			delete(hdr.PAXRecords, k)
-		}
-	}
-
-	// Add a non-basic PAX record to force PAX format.
-	// Without this, Go's tar writer may fall back to USTAR for simple entries
-	// even when Format is set to FormatPAX (see common.go:509-510).
-	hdr.PAXRecords[canonicalPAXRecordKey] = "1"
-
-	if hdr.Typeflag == tar.TypeLink {
-		hdr.Size = 0
-	}
-}
-
-// CanonicalHeaderBytes generates the canonical tar header bytes for a given
-// tar header. This creates a scratch tar.Writer to produce the exact bytes.
-// The returned bytes include any PAX extended header blocks and the main
-// header block, but NOT file content or content padding.
-func CanonicalHeaderBytes(hdr *tar.Header) ([]byte, error) {
-	CanonicalizeTarHeader(hdr)
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	if err := tw.WriteHeader(hdr); err != nil {
-		return nil, err
-	}
-	// Don't call Flush() or Close() — we only want the header bytes.
-	// The scratch writer is discarded.
-	_ = tw
-	return buf.Bytes(), nil
-}
-
-// CanonicalEndOfArchive returns the canonical end-of-archive marker
-// (two 512-byte zero blocks = 1024 bytes).
-func CanonicalEndOfArchive() []byte {
-	return make([]byte, 1024)
-}
-
 // NewFileMetadata creates a basic FileMetadata entry for hdr.
 // The caller must set DigestOffset/EndOffset, and the Chunk* values, separately.
 func NewFileMetadata(hdr *tar.Header) (FileMetadata, error) {
@@ -556,53 +332,4 @@ func NewFileMetadata(hdr *tar.Header) (FileMetadata, error) {
 		Devminor:   hdr.Devminor,
 		Xattrs:     xattrs,
 	}, nil
-}
-
-// NewCanonicalTarFilter wraps a tar stream so that every header is
-// canonicalized before it is re-emitted. The file content is passed
-// through unchanged.
-//
-// This is used when Diff() produces a tar from the filesystem: the
-// raw tar has non-canonical headers (no PAX forced, Uname set, file
-// type bits in Mode, etc.). Wrapping it through this filter makes the
-// output byte-identical to what WriteCanonicalTar produces from the
-// TOC metadata, so the digest matches the stored UncompressedDigest.
-func NewCanonicalTarFilter(src io.ReadCloser) io.ReadCloser {
-	pr, pw := io.Pipe()
-
-	go func() {
-		err := func() error {
-			tr := tar.NewReader(src)
-			tw := tar.NewWriter(pw)
-
-			for {
-				hdr, err := tr.Next()
-				if err == io.EOF {
-					break
-				}
-				if err != nil {
-					return fmt.Errorf("reading tar entry: %w", err)
-				}
-
-				CanonicalizeTarHeader(hdr)
-
-				if err := tw.WriteHeader(hdr); err != nil {
-					return fmt.Errorf("writing canonical header for %q: %w", hdr.Name, err)
-				}
-
-				if hdr.Size > 0 {
-					if _, err := io.Copy(tw, tr); err != nil {
-						return fmt.Errorf("copying content for %q: %w", hdr.Name, err)
-					}
-				}
-			}
-
-			return tw.Close()
-		}()
-
-		src.Close()
-		pw.CloseWithError(err) //nolint:errcheck
-	}()
-
-	return pr
 }

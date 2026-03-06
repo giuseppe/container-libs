@@ -188,68 +188,7 @@ func (m *manifestSchema2) UpdatedImage(ctx context.Context, options types.Manife
 	}
 	// Ignore options.EmbeddedDockerReference: it may be set when converting from schema1 to schema2, but we really don't care.
 
-	// If compressors (e.g. zstd:chunked) report canonical DiffIDs that differ from the
-	// original input, update the config so that partial-pull consumers compute the same value.
-	if err := copy.updateConfigDiffIDs(ctx, options.InformationOnly.LayerDiffIDs); err != nil {
-		return nil, err
-	}
-
 	return memoryImageFromManifest(&copy), nil
-}
-
-// updateConfigDiffIDs updates the config blob's rootfs.diff_ids with the provided DiffIDs.
-// Only non-empty entries in layerDiffIDs are updated; empty entries preserve the original value.
-// If layerDiffIDs is nil or all-empty, this is a no-op.
-func (m *manifestSchema2) updateConfigDiffIDs(ctx context.Context, layerDiffIDs []digest.Digest) error {
-	if len(layerDiffIDs) == 0 {
-		return nil
-	}
-	hasNonEmpty := false
-	for _, d := range layerDiffIDs {
-		if d != "" {
-			hasNonEmpty = true
-			break
-		}
-	}
-	if !hasNonEmpty {
-		return nil
-	}
-
-	configBlob, err := m.ConfigBlob(ctx)
-	if err != nil {
-		return fmt.Errorf("reading config blob: %w", err)
-	}
-	if configBlob == nil {
-		return nil
-	}
-
-	var config imgspecv1.Image
-	if err := json.Unmarshal(configBlob, &config); err != nil {
-		return fmt.Errorf("parsing config: %w", err)
-	}
-
-	changed := false
-	for i, d := range layerDiffIDs {
-		if d == "" || i >= len(config.RootFS.DiffIDs) {
-			continue
-		}
-		if config.RootFS.DiffIDs[i] != d {
-			config.RootFS.DiffIDs[i] = d
-			changed = true
-		}
-	}
-	if !changed {
-		return nil
-	}
-
-	updatedConfig, err := json.Marshal(config)
-	if err != nil {
-		return fmt.Errorf("re-encoding config: %w", err)
-	}
-	m.configBlob = updatedConfig
-	m.m.ConfigDescriptor.Digest = digest.Canonical.FromBytes(updatedConfig)
-	m.m.ConfigDescriptor.Size = int64(len(updatedConfig))
-	return nil
 }
 
 func oci1DescriptorFromSchema2Descriptor(d manifest.Schema2Descriptor) imgspecv1.Descriptor {

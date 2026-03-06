@@ -8,7 +8,6 @@ import (
 	"slices"
 
 	ociencspec "github.com/containers/ocicrypt/spec"
-	"github.com/opencontainers/go-digest"
 	imgspecv1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/image/v5/docker/reference"
 	"go.podman.io/image/v5/internal/iolimits"
@@ -172,58 +171,7 @@ func (m *manifestOCI1) UpdatedImage(ctx context.Context, options types.ManifestU
 	}
 	// Ignore options.EmbeddedDockerReference: it may be set when converting from schema1, but we really don't care.
 
-	// If compressors (e.g. zstd:chunked) report canonical DiffIDs that differ from the
-	// original input, update the config so that partial-pull consumers compute the same value.
-	if err := copy.updateConfigDiffIDs(ctx, options.InformationOnly.LayerDiffIDs); err != nil {
-		return nil, err
-	}
-
 	return memoryImageFromManifest(&copy), nil
-}
-
-// updateConfigDiffIDs updates the config blob's rootfs.diff_ids with the provided DiffIDs.
-// Only non-empty entries in layerDiffIDs are updated; empty entries preserve the original value.
-// If layerDiffIDs is nil or all-empty, this is a no-op.
-func (m *manifestOCI1) updateConfigDiffIDs(ctx context.Context, layerDiffIDs []digest.Digest) error {
-	if !slices.ContainsFunc(layerDiffIDs, func(d digest.Digest) bool { return d != "" }) {
-		return nil
-	}
-
-	configBlob, err := m.ConfigBlob(ctx)
-	if err != nil {
-		return fmt.Errorf("reading config blob: %w", err)
-	}
-	if configBlob == nil {
-		return nil
-	}
-
-	var config imgspecv1.Image
-	if err := json.Unmarshal(configBlob, &config); err != nil {
-		return fmt.Errorf("parsing config: %w", err)
-	}
-
-	changed := false
-	for i, d := range layerDiffIDs {
-		if d == "" || i >= len(config.RootFS.DiffIDs) {
-			continue
-		}
-		if config.RootFS.DiffIDs[i] != d {
-			config.RootFS.DiffIDs[i] = d
-			changed = true
-		}
-	}
-	if !changed {
-		return nil
-	}
-
-	updatedConfig, err := json.Marshal(config)
-	if err != nil {
-		return fmt.Errorf("re-encoding config: %w", err)
-	}
-	m.configBlob = updatedConfig
-	m.m.Config.Digest = digest.Canonical.FromBytes(updatedConfig)
-	m.m.Config.Size = int64(len(updatedConfig))
-	return nil
 }
 
 func schema2DescriptorFromOCI1Descriptor(d imgspecv1.Descriptor) manifest.Schema2Descriptor {
