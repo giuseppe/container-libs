@@ -3,6 +3,7 @@ package archive
 import (
 	"archive/tar"
 	"fmt"
+	"io"
 	"path"
 	"strings"
 	"time"
@@ -144,4 +145,54 @@ func canonicalPath(name string, isDir bool) string {
 	}
 
 	return name
+}
+
+// NewCanonicalTarFilter wraps a tar stream reader and rewrites all headers
+// to canonical format. It does NOT re-sort entries (the source must already
+// be in canonical order).
+func NewCanonicalTarFilter(src io.ReadCloser) io.ReadCloser {
+	pr, pw := io.Pipe()
+
+	go func() {
+		tr := tar.NewReader(src)
+		tw := tar.NewWriter(pw)
+
+		var err error
+		defer func() {
+			if closeErr := tw.Close(); closeErr != nil && err == nil {
+				err = closeErr
+			}
+			if closeErr := src.Close(); closeErr != nil && err == nil {
+				err = closeErr
+			}
+			pw.CloseWithError(err)
+		}()
+
+		for {
+			hdr, nextErr := tr.Next()
+			if nextErr == io.EOF {
+				break
+			}
+			if nextErr != nil {
+				err = nextErr
+				return
+			}
+
+			CanonicalizeTarHeader(hdr)
+
+			if writeErr := tw.WriteHeader(hdr); writeErr != nil {
+				err = writeErr
+				return
+			}
+
+			if hdr.Size > 0 {
+				if _, copyErr := io.Copy(tw, tr); copyErr != nil {
+					err = copyErr
+					return
+				}
+			}
+		}
+	}()
+
+	return pr
 }

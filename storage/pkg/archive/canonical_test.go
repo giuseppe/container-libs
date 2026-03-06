@@ -3,6 +3,7 @@ package archive
 import (
 	"archive/tar"
 	"bytes"
+	"io"
 	"testing"
 	"time"
 )
@@ -280,5 +281,64 @@ func TestCanonicalTarDeterminism(t *testing.T) {
 
 	if !bytes.Equal(tar1, tar2) {
 		t.Error("canonical tar output is not deterministic")
+	}
+}
+
+func TestNewCanonicalTarFilter(t *testing.T) {
+	// Create a non-canonical tar
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+
+	hdr := &tar.Header{
+		Name:       "./file.txt",
+		Typeflag:   tar.TypeReg,
+		Mode:       0o100644,
+		Size:       5,
+		Uname:      "root",
+		Gname:      "root",
+		ModTime:    time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		AccessTime: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		ChangeTime: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Filter through canonical
+	filtered := NewCanonicalTarFilter(io.NopCloser(&buf))
+	result, err := io.ReadAll(filtered)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Read back and verify canonical
+	tr := tar.NewReader(bytes.NewReader(result))
+	outHdr, err := tr.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := IsCanonicalHeader(outHdr); err != nil {
+		t.Errorf("filtered header not canonical: %v", err)
+	}
+	if outHdr.Name != "file.txt" {
+		t.Errorf("Name: got %q, want %q", outHdr.Name, "file.txt")
+	}
+	if outHdr.Uname != "" {
+		t.Errorf("Uname not cleared")
+	}
+
+	content, err := io.ReadAll(tr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "hello" {
+		t.Errorf("content: got %q, want %q", string(content), "hello")
 	}
 }
