@@ -70,6 +70,10 @@ type (
 		ForceMask *os.FileMode
 		// Timestamp, if set, will be set in each header as create/mod/access time
 		Timestamp *time.Time
+		// Canonical, if set, produces a canonical tar format with deterministic
+		// headers (PAX format, cleaned paths, zeroed times, etc.) that enables
+		// reproducible DiffIDs without tarsplit data.
+		Canonical bool
 	}
 )
 
@@ -496,6 +500,8 @@ type tarWriter struct {
 
 	// Timestamp, if set, will be set in each header as create/mod/access time
 	Timestamp *time.Time
+	// Canonical, if set, applies canonical tar header normalization.
+	Canonical bool
 }
 
 func newTarWriter(idMapping *idtools.IDMappings, writer io.Writer, chownOpts *idtools.IDPair, timestamp *time.Time) *tarWriter {
@@ -624,6 +630,10 @@ func (ta *tarWriter) prepareAddFile(path, name string) (*addFileData, error) {
 	}
 
 	maybeTruncateHeaderModTime(hdr)
+
+	if ta.Canonical {
+		CanonicalizeTarHeader(hdr)
+	}
 
 	result := &addFileData{
 		path: path,
@@ -924,6 +934,7 @@ func tarWithOptionsTo(dest io.WriteCloser, srcPath string, options *TarOptions) 
 	)
 	ta.WhiteoutConverter = GetWhiteoutConverter(options.WhiteoutFormat, options.WhiteoutData)
 	ta.CopyPass = options.CopyPass
+	ta.Canonical = options.Canonical
 
 	includeFiles := options.IncludeFiles
 	defer func() {
