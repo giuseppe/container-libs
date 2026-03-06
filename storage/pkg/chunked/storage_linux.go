@@ -361,6 +361,9 @@ func makeZstdChunkedDiffer(store storage.Store, blobSize int64, tocDigest digest
 		if err != nil {
 			return nil, fmt.Errorf("computing size from tar-split: %w", err)
 		}
+	} else if toc != nil && toc.Version >= 2 {
+		// v2 TOC: no tarsplit needed, canonical tar format is deterministic.
+		// UncompressedDigest will be computed from the staged files using canonical tar.
 	} else if !pullOptions.insecureAllowUnpredictableImageContents { // With no tar-split, we can't compute the traditional UncompressedDigest.
 		return nil, errFallbackCanConvert{
 			newErrFallbackToOrdinaryLayerDownload(fmt.Errorf("zstd:chunked layers without tar-split data don't support partial pulls with guaranteed consistency with non-partial pulls")),
@@ -1879,6 +1882,16 @@ func (c *chunkedDiffer) ApplyDiff(dest string, options *archive.TarOptions, diff
 			digester := digest.Canonical.Digester()
 			if err := asm.WriteOutputTarStream(fg, metadata, digester.Hash()); err != nil {
 				return output, fmt.Errorf("digesting staged uncompressed stream: %w", err)
+			}
+			output.UncompressedDigest = digester.Digest()
+		case c.toc != nil && c.toc.Version >= 2:
+			// v2 layer: compute UncompressedDigest using canonical tar from TOC metadata.
+			fg := newStagedFileGetter(dirFile, flatPathNameMap)
+			digester := digest.Canonical.Digester()
+			if err := minimal.WriteCanonicalTar(digester.Hash(), toc.Entries, func(name string) (io.ReadCloser, error) {
+				return fg.Get(name)
+			}); err != nil {
+				return output, fmt.Errorf("digesting canonical tar from TOC: %w", err)
 			}
 			output.UncompressedDigest = digester.Digest()
 		default:
