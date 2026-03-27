@@ -27,6 +27,7 @@ import (
 	"go.podman.io/image/v5/transports"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage"
+	"go.podman.io/storage/pkg/idtools"
 )
 
 const (
