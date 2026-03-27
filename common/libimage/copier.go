@@ -150,6 +150,17 @@ type CopyOptions struct {
 	// an access token for the registry.
 	IdentityToken string `json:"identitytoken,omitempty"`
 
+	// ----- ID Mapping ---------------------------------------------------
+
+	// UIDMap and GIDMap are used for setting up image layers with the
+	// correct UID/GID mappings when pulling into storage.
+	UIDMap []idtools.IDMap
+	GIDMap []idtools.IDMap
+	// HostUIDMapping and HostGIDMapping explicitly request host
+	// mappings, preventing inheritance from parent layers.
+	HostUIDMapping bool
+	HostGIDMapping bool
+
 	// ----- internal -----------------------------------------------------
 
 	// Additional tags when creating or copying a docker-archive.
@@ -279,6 +290,11 @@ func NewCopier(options *CopyOptions, sc *types.SystemContext) (*Copier, error) {
 	if options.CompressionLevel != nil {
 		c.systemContext.CompressionLevel = options.CompressionLevel
 	}
+
+	c.systemContext.UIDMap = options.UIDMap
+	c.systemContext.GIDMap = options.GIDMap
+	c.systemContext.HostUIDMapping = options.HostUIDMapping
+	c.systemContext.HostGIDMapping = options.HostGIDMapping
 
 	// NOTE: for the sake of consistency it's called Oci* in the CopyOptions.
 	c.systemContext.OCIAcceptUncompressedLayers = options.OciAcceptUncompressedLayers
