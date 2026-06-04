@@ -21,19 +21,23 @@ IMAGE_URL="https://objectstorage.us-ashburn-1.oraclecloud.com/n/id0lmbbwgcdv/b/p
 
 trap 'limactl delete --force $LIMA_VM_NAME' EXIT
 
+echo "::group::Starting VM"
 limactl --yes start --plain --name=$LIMA_VM_NAME --cpus $(nproc) --memory 8 --nested-virt \
     --set ".images=[{\"location\":\"$IMAGE_URL\", \"arch\": \"x86_64\"}]" \
     "$SCRIPT_DIR/template.lima.yml"
 
 limactl copy "$REPO_DIR" "$LIMA_VM_NAME:/var/tmp/container-libs"
+echo "::endgroup::"
 
 set +e
 
 limactl shell --workdir /var/tmp/container-libs $LIMA_VM_NAME ./hack/ci/runner.sh "${@}"
 rc=$?
 
+echo "::group::Collecting logs"
 limactl shell --workdir /var/tmp/container-libs $LIMA_VM_NAME sudo hack/ci/logcollector.sh journal &> "$SCRIPT_DIR/journal.log"
 limactl shell --workdir /var/tmp/container-libs $LIMA_VM_NAME sudo hack/ci/logcollector.sh audit &> "$SCRIPT_DIR/audit.log"
 limactl shell --workdir /var/tmp/container-libs $LIMA_VM_NAME sudo hack/ci/logcollector.sh df &> "$SCRIPT_DIR/df.log"
+echo "::endgroup::"
 
 exit $rc

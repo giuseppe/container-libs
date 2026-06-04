@@ -267,35 +267,24 @@ run_common() {
 # Main dispatch
 ###############################################################################
 
-echo
-echo "#################"
-echo "Installing dependencies for $MODULE"
-echo "#################"
 
 # Normalize module name for function dispatch (image-skopeo -> image_skopeo)
 MODULE_FUNC="${MODULE//-/_}"
 
+echo "::group::Installing dependencies for $MODULE"
 install_deps_${MODULE_FUNC}
+echo "::endgroup::"
 
 if type -t prepare_${MODULE_FUNC}_env &>/dev/null; then
-    echo
-    echo "#################"
-    echo "Preparing environment for $MODULE"
-    echo "#################"
+    echo "::group::Preparing environment for $MODULE"
     prepare_${MODULE_FUNC}_env
+    echo "::endgroup::"
 fi
 
-echo
-echo "#################"
-echo "Logging system info"
-echo "#################"
-
+echo "::group::Logging system info"
 "$SCRIPT_DIR/logcollector.sh" packages
 "$SCRIPT_DIR/logcollector.sh" ip
+echo "::endgroup::"
 
-echo
-echo "#################"
 echo "Starting tests: $MODULE $VARIANT"
-echo "#################"
-
 run_${MODULE_FUNC}
