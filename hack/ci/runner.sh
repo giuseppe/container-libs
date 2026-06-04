@@ -180,12 +180,24 @@ run_image() {
     git config --global --add safe.directory "$GOSRC"
 
     # Run root tests for storage-dependent tests
+
+    # Hacky solution to find test that must be run as root.
+    # This looks for the ensureTestCanCreateImages() test function call and gets the
+    # function name where it is called via git grep,
+    # then trims the line to only show the actual function name and add "^$" around it
+    # since go test commands only accepts a single regex.
+    # Then join all names with "|" with paste to again build up a single regex string
+    # that matches all these names.
+    #
+    # test_filter must have the $ duplicated because make expands the value
+    # (and there seems to be no trivial way to avoid that while defining the variable
+    # as an argument?!)
     test_filter=$(git grep -h --show-function ensureTestCanCreateImages ./storage |
-        sed -n 's/func \(Test[[:alnum:]]*\)(.*/^\1$/p' |
+        sed -n 's/func \(Test[[:alnum:]]*\)(.*/^\1$$/p' |
         paste -sd "|" -)
     if [ -n "$test_filter" ]; then
         sudo -E env "PATH=$PATH" "GOPATH=$GOPATH_DIR" "HOME=$HOME" \
-            make test "BUILDTAGS=$BUILDTAGS" "TESTFLAGS=-v -run $test_filter" TEST_PACKAGES=./storage
+            make test "BUILDTAGS=$BUILDTAGS" "TESTFLAGS=-v -run '$test_filter'" TEST_PACKAGES=./storage
     fi
 
     # Run rootless tests
