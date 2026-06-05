@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+SKOPEO_CI_BRANCH=main
+
 # This script is only intended to be run inside the Lima VM to configure it and start the tests.
 # Do not run locally.
 
@@ -241,7 +243,7 @@ run_image_skopeo() {
     sudo podman umount --latest
     sudo podman rm --latest
 
-    git clone -b main https://github.com/containers/skopeo.git "$SKOPEO_PATH"
+    git clone -b "$SKOPEO_CI_BRANCH" https://github.com/containers/skopeo.git "$SKOPEO_PATH"
     cd "$SKOPEO_PATH"
     go mod edit -replace "go.podman.io/storage=$GOSRC/storage"
     go mod edit -replace "go.podman.io/image/v5=$GOSRC/image"
