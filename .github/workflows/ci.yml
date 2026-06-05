@@ -17,7 +17,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION: "1.26.x"
   LIMA_VERSION: "v2.1.1"
 
 jobs:
@@ -90,7 +89,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version: stable
           cache-dependency-path: "./storage/go.sum"
       - name: Cross-compile
         working-directory: ./storage
@@ -106,7 +105,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version: stable
           cache-dependency-path: "./storage/go.sum"
       - name: Install dependencies
         run: |
@@ -126,7 +125,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version: stable
           cache-dependency-path: "./image/go.sum"
       - name: Install dependencies
         run: |
