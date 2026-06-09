@@ -72,13 +72,6 @@ install_deps_common() {
 ###############################################################################
 
 prepare_storage_env() {
-    # /tmp is a tmpfs, and as of 2025-09-11 we are using Debian images with Linux 6.1, where tmpfs does not support extended attributes.
-    # That prevents testing various graph drivers; so, use ext4 there.
-    truncate -s 10G /var/tmp/test-fs.img
-    sudo mkfs.ext4 -q /var/tmp/test-fs.img
-    sudo mount -o loop /var/tmp/test-fs.img /tmp
-    sudo chmod 1777 /tmp
-
     for i in $(seq 0 1023); do
         [ -e /dev/loop$i ] || sudo mknod /dev/loop$i b 7 $i 2>/dev/null || true
     done
