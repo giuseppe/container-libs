@@ -18,56 +18,6 @@ MODULE=${1:?must give module as first argument}
 parse_args "$@"
 
 ###############################################################################
-# Dependency installation
-###############################################################################
-
-install_deps_storage() {
-    :
-}
-
-install_deps_image() {
-    case $OS_RELEASE_ID in
-        fedora)
-            sudo dnf install -y openssh-server
-            ;;
-        debian)
-            sudo apt-get update
-            sudo apt-get install -y openssh-server
-            ;;
-        *) die "Unsupported OS for image: $OS_RELEASE_ID" ;;
-    esac
-    printf 'unqualified-search-registries = ["docker.io"]\n' | sudo tee /etc/containers/registries.conf
-
-    if [[ "$VARIANT" == "sequoia" ]]; then
-        case $OS_RELEASE_ID in
-            fedora) sudo dnf install -y podman-sequoia ;;
-        esac
-    fi
-}
-
-install_deps_image_skopeo() {
-    install_deps_image
-    echo "root:100000:65536" | sudo tee -a /etc/subuid
-    echo "root:100000:65536" | sudo tee -a /etc/subgid
-    sudo ln -sf /usr/bin/docker-registry /usr/local/bin/registry 2>/dev/null || true
-}
-
-install_deps_common() {
-    case $OS_RELEASE_ID in
-        fedora) sudo dnf install -y protobuf-compiler protobuf-devel ;;
-        debian) sudo apt-get update && sudo apt-get install -y protobuf-compiler libprotobuf-dev ;;
-    esac
-    printf 'unqualified-search-registries = ["docker.io"]\n' | sudo tee /etc/containers/registries.conf
-
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-    source "$HOME/.cargo/env"
-    git clone --depth=1 https://github.com/containers/netavark.git /tmp/netavark-src
-    make -C /tmp/netavark-src build
-    sudo mkdir -p /usr/local/libexec/podman
-    sudo install -m 755 /tmp/netavark-src/bin/netavark /usr/local/libexec/podman/netavark
-}
-
-###############################################################################
 # Environment preparation
 ###############################################################################
 
@@ -279,10 +229,6 @@ run_common() {
 
 # Normalize module name for function dispatch (image-skopeo -> image_skopeo)
 MODULE_FUNC="${MODULE//-/_}"
-
-echo "::group::Installing dependencies for $MODULE"
-install_deps_${MODULE_FUNC}
-echo "::endgroup::"
 
 if type -t prepare_${MODULE_FUNC}_env &>/dev/null; then
     echo "::group::Preparing environment for $MODULE"
