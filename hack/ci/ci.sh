@@ -6,7 +6,7 @@ SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )
 
 source "$SCRIPT_DIR/lib.sh"
 
-AUTOMATION_RELEASE="20260520t200858z" # FIXME: should be Renovate-managed
+AUTOMATION_RELEASE="20260616t073924z" # FIXME: should be Renovate-managed
 LIMA_VM_NAME=container-libs-ci
 
 MODULE=${1:?must give module as first argument}
