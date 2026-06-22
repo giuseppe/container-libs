@@ -12,7 +12,7 @@ jobs:
   codespell:
     runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
     - name: install deps
       # Version of codespell bundled with Ubuntu is way old, so use pip.
       run: pip install --break-system-packages codespell==v2.4.1
@@ -25,10 +25,10 @@ jobs:
       run:
         working-directory: ./common
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       with:
         fetch-depth: 2
-    - uses: actions/setup-go@v6
+    - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
       with:
         go-version: 1.25.x
         # By default the go cache will only use go.sum in the root which we don't have,
@@ -40,19 +40,19 @@ jobs:
         sudo apt-get -qq update
         sudo apt-get -qq install libseccomp-dev libgpgme-dev libbtrfs-dev libsubid-dev
     - name: lint-common
-      uses: golangci/golangci-lint-action@v8
+      uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9
       with:
         version: "${{ env.LINT_VERSION }}"
         args: --verbose
         working-directory: ./common
     - name: lint-image
-      uses: golangci/golangci-lint-action@v8
+      uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9
       with:
         version: "${{ env.LINT_VERSION }}"
         args: --verbose
         working-directory: ./image
     - name: lint-storage
-      uses: golangci/golangci-lint-action@v8
+      uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9
       with:
         version: "${{ env.LINT_VERSION }}"
         args: --verbose
@@ -69,13 +69,13 @@ jobs:
       # Base commit sha that we use the lint the commit from
       EPOCH_TEST_COMMIT: "${{ github.event.pull_request.base.sha }}"
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       with:
         # By default github actions creates a merge commit which fails the validation,
         # we only must validate the actual commits of the author.
         ref: ${{ github.event.pull_request.head.sha }}
         fetch-depth: ${{ github.event.pull_request.commits }}
-    - uses: actions/setup-go@v6
+    - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
       with:
         go-version: 1.25.x
         # See comment on lint task
@@ -86,8 +86,8 @@ jobs:
   go-tidy:
     runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v7
-    - uses: actions/setup-go@v6
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+    - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
       with:
         go-version: 1.25.x
         # See comment on lint task
