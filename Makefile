@@ -11,7 +11,11 @@ export PATH := $(PATH):${GOBIN}
 EPOCH_TEST_COMMIT ?= $(shell git merge-base $${DEST_BRANCH:-main} HEAD)
 
 
-validate: codespell git-validation lint
+validate: codespell git-validation lint check-ci-yaml
+
+.PHONY: check-ci-yaml
+check-ci-yaml:
+	hack/ci/ci_yaml_test.py
 
 .PHONY: codespell
 codespell:

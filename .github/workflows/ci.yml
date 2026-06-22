@@ -133,6 +133,7 @@ jobs:
     name: "Total Success"
     if: always()
     needs:
+      - path-filter
       - validate
       - storage-test
       - storage-cross
