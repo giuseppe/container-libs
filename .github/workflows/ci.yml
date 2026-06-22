@@ -46,7 +46,7 @@ jobs:
     uses: ./.github/workflows/validate.yml
 
   storage-test:
-    needs: path-filter
+    needs: [path-filter, validate]
     if: github.event_name == 'push' || needs.path-filter.outputs.storage == 'true'
     name: "storage ${{ matrix.distro }} ${{ matrix.driver }}"
     strategy:
@@ -66,7 +66,7 @@ jobs:
       timeout: 30
 
   storage-cross:
-    needs: path-filter
+    needs: [path-filter, validate]
     if: github.event_name == 'push' || needs.path-filter.outputs.storage == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -82,7 +82,7 @@ jobs:
         run: make cross
 
   image-cross:
-    needs: path-filter
+    needs: [path-filter, validate]
     if: github.event_name == 'push' || needs.path-filter.outputs.image == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -102,7 +102,7 @@ jobs:
         run: make cross
 
   image-test:
-    needs: path-filter
+    needs: [path-filter, validate]
     if: github.event_name == 'push' || needs.path-filter.outputs.image == 'true'
     name: "${{ matrix.module }} fedora-current ${{ matrix.variant }}"
     strategy:
@@ -119,6 +119,7 @@ jobs:
       timeout: 30
 
   common-test:
+    needs: [path-filter, validate]
     name: "common fedora-current"
     uses: ./.github/workflows/lima.yml
     with:
