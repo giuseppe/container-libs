@@ -63,13 +63,13 @@ jobs:
       module: storage
       distro: ${{ matrix.distro }}
       variant: ${{ matrix.driver }}
-      timeout: 30
+      timeout: 20
 
   storage-cross:
     needs: [path-filter, validate]
     if: github.event_name == 'push' || needs.path-filter.outputs.storage == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
     name: "Storage: Cross"
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -85,7 +85,7 @@ jobs:
     needs: [path-filter, validate]
     if: github.event_name == 'push' || needs.path-filter.outputs.image == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
     name: "Image: Cross"
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -116,7 +116,7 @@ jobs:
       module: ${{ matrix.module }}
       distro: fedora-current
       variant: ${{ matrix.variant }}
-      timeout: 30
+      timeout: 20
 
   common-test:
     needs: [path-filter, validate]
@@ -126,7 +126,7 @@ jobs:
       runner: cncf-ubuntu-8-32-x86
       module: common
       distro: fedora-current
-      timeout: 45
+      timeout: 20
 
   # N/B: GitHub merge protection is configured for this exact job name, DO NOT CHANGE IT.
   success:
