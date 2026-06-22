@@ -1,0 +1,60 @@
+name: lima
+
+on:
+  workflow_call:
+    inputs:
+      module:
+        required: true
+        type: string
+      distro:
+        required: true
+        type: string
+      variant:
+        required: false
+        type: string
+      runner:
+        required: true
+        type: string
+      timeout:
+        required: false
+        type: number
+
+permissions: {}
+
+jobs:
+  lima:
+    name: lima # main name is set by who spawns this job
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.timeout || 20 }} # default to 20m timeout if non specified
+    permissions: {}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: lima-vm/lima-actions/setup@55627e31b78637bf254a8b2a14da8ea7d12564e5 # v1.1.0
+        id: lima
+        with:
+          version: v2.1.1
+
+      # NOTE, we are not using a cache here as documented in the lima action.
+      # This is because our VM images are above 5GB and the total github limit is 10 GB which means
+      # it will clean out the other image basically right away making the cache useless for other tasks.
+      # Also most importantly while testing it the cache was slower, the VM images are hosted in the
+      # oracle cloud bucket which is already local to the oracle CI runners unlike the cache which is
+      # stored by github somewhere else.
+
+      - name: Run test on lima
+        run: | # zizmor: ignore[template-injection]
+          ./hack/ci/ci.sh ${{ inputs.module }} ${{ inputs.distro }} ${{ inputs.variant }}
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: "logs-${{ inputs.module }}-${{ inputs.distro }}-${{ inputs.variant }}"
+          path: |
+            ./hack/ci/journal.log
+            ./hack/ci/audit.log
+            ./hack/ci/df.log
+          if-no-files-found: ignore
