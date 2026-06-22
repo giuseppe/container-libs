@@ -11,6 +11,7 @@ env:
 jobs:
   basic:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
     - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
     - name: install deps
@@ -23,6 +24,7 @@ jobs:
 
   lint:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: ./common
@@ -67,6 +69,7 @@ jobs:
     # only run this on PRs
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     env:
       # Base commit sha that we use the lint the commit from
       EPOCH_TEST_COMMIT: "${{ github.event.pull_request.base.sha }}"
@@ -87,6 +90,7 @@ jobs:
 
   go-tidy:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
     - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
     - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
