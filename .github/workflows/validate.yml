@@ -1,14 +1,7 @@
 name: validate
 
 on:
-  push:
-    branches:
-      - main
-      - podman-*
-  pull_request:
-    branches:
-      - main
-      - podman-*
+  workflow_call:
 
 permissions: read-all
 
