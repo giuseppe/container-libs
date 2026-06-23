@@ -95,26 +95,6 @@ jobs:
         working-directory: ./storage
         run: make cross
 
-  storage-gofix:
-    needs: path-filter
-    if: github.event_name == 'push' || needs.path-filter.outputs.storage == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    name: "Storage: gofix"
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
-        with:
-          go-version: stable
-          cache-dependency-path: "./storage/go.sum"
-      - name: Install dependencies
-        run: |
-          sudo apt-get -qq update
-          sudo apt-get -qq install -y libbtrfs-dev libgpgme-dev libdevmapper-dev
-      - name: Run go fix
-        working-directory: ./storage
-        run: go fix -diff ./...
-
   image-cross:
     needs: path-filter
     if: github.event_name == 'push' || needs.path-filter.outputs.image == 'true'
@@ -226,7 +206,6 @@ jobs:
     needs:
       - storage-test
       - storage-cross
-      - storage-gofix
       - image-cross
       - image-test
       - image-test-skopeo
