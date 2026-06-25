@@ -21,34 +21,26 @@ jobs:
   path-filter:
     runs-on: ubuntu-24.04
     outputs:
+      all: ${{ steps.filter.outputs.all }}
       storage: ${{ steps.filter.outputs.storage }}
       image: ${{ steps.filter.outputs.image }}
+      common: ${{ steps.filter.outputs.common }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         id: filter
         with:
-          filters: |
-            storage:
-              - '.github/workflows/ci.yml'
-              - 'hack/ci/**'
-              - 'go.work'
-              - 'go.work.sum'
-              - 'storage/**'
-            image:
-              - '.github/workflows/ci.yml'
-              - 'hack/ci/**'
-              - 'go.work'
-              - 'go.work.sum'
-              - 'storage/**'
-              - 'image/**'
+          filters: .github/filters.yaml
 
   validate:
     uses: ./.github/workflows/validate.yml
 
   storage-test:
     needs: [path-filter, validate]
-    if: github.event_name == 'push' || needs.path-filter.outputs.storage == 'true'
+    if: |
+      github.event_name != 'pull_request' ||
+      needs.path-filter.outputs.all == 'true' ||
+      needs.path-filter.outputs.storage == 'true'
     name: "storage ${{ matrix.distro }} ${{ matrix.driver }}"
     strategy:
       fail-fast: false
@@ -68,7 +60,10 @@ jobs:
 
   storage-cross:
     needs: [path-filter, validate]
-    if: github.event_name == 'push' || needs.path-filter.outputs.storage == 'true'
+    if: |
+      github.event_name != 'pull_request' ||
+      needs.path-filter.outputs.all == 'true' ||
+      needs.path-filter.outputs.storage == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     name: "Storage: Cross"
@@ -84,7 +79,10 @@ jobs:
 
   image-cross:
     needs: [path-filter, validate]
-    if: github.event_name == 'push' || needs.path-filter.outputs.image == 'true'
+    if: |
+      github.event_name != 'pull_request' ||
+      needs.path-filter.outputs.all == 'true' ||
+      needs.path-filter.outputs.image == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     name: "Image: Cross"
@@ -104,7 +102,10 @@ jobs:
 
   image-test:
     needs: [path-filter, validate]
-    if: github.event_name == 'push' || needs.path-filter.outputs.image == 'true'
+    if: |
+      github.event_name != 'pull_request' ||
+      needs.path-filter.outputs.all == 'true' ||
+      needs.path-filter.outputs.image == 'true'
     name: "${{ matrix.module }} fedora-current ${{ matrix.variant }}"
     strategy:
       fail-fast: false
@@ -121,6 +122,10 @@ jobs:
 
   common-test:
     needs: [path-filter, validate]
+    if: |
+      github.event_name != 'pull_request' ||
+      needs.path-filter.outputs.all == 'true' ||
+      needs.path-filter.outputs.common == 'true'
     name: "common fedora-current"
     uses: ./.github/workflows/lima.yml
     with:
