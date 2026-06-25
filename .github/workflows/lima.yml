@@ -19,14 +19,14 @@ on:
         required: false
         type: number
 
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
   lima:
     name: lima # main name is set by who spawns this job
     runs-on: ${{ inputs.runner }}
     timeout-minutes: ${{ inputs.timeout || 20 }} # default to 20m timeout if non specified
-    permissions: {}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
