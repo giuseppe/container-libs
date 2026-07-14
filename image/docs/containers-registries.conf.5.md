@@ -145,8 +145,12 @@ source is found, it is used for subsequent blob fetches in the same pull
 operation.
 
 This means that even if the selected source can serve the manifest, blob pulls
-can transparently fall back to another mirror or the primary registry without
-restarting the entire pull.
+can transparently retry on the same source once and then fall back to another
+mirror or the primary registry without restarting the entire pull.
+
+This fallback or retry operates in addition to caller-level retry (e.g. `containers-common`'s `retry` package or kubelet retries).  A single blob fetch may be retried once on the same source before
+falling back, and the caller may retry the entire pull operation on top of that.
+
 
 *Note*: Redirection and mirrors are currently processed only when reading a single image,
 not when pushing to a registry nor when doing any other kind of lookup/search on a on a registry.
