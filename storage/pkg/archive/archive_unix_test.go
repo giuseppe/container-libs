@@ -47,10 +47,12 @@ func TestCanonicalTarName(t *testing.T) {
 		isDir    bool
 		expected string
 	}{
-		{"foo", false, "foo"},
-		{"foo", true, "foo/"},
-		{"foo/bar", false, "foo/bar"},
-		{"foo/bar", true, "foo/bar/"},
+		{"foo", false, "./foo"},
+		{"foo", true, "./foo/"},
+		{"foo/bar", false, "./foo/bar"},
+		{"foo/bar", true, "./foo/bar/"},
+		{".", true, "./"},
+		{"./foo", false, "./foo"},
 	}
 	for _, v := range cases {
 		if out, err := canonicalTarName(v.in, v.isDir); err != nil {

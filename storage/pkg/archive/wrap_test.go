@@ -23,19 +23,20 @@ func TestGenerateEmptyFile(t *testing.T) {
 
 	tr := tar.NewReader(archive)
 	actualFiles := make([][]string, 0, 10)
-	i := 0
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
 		require.NoError(t, err)
+		if hdr.Typeflag == tar.TypeXGlobalHeader {
+			continue
+		}
 		buf := new(bytes.Buffer)
 		_, err = buf.ReadFrom(tr)
 		require.NoError(t, err)
 		content := buf.String()
 		actualFiles = append(actualFiles, []string{hdr.Name, content})
-		i++
 	}
 	assert.Equal(t, expectedFiles, actualFiles)
 }
@@ -53,19 +54,20 @@ func TestGenerateWithContent(t *testing.T) {
 
 	tr := tar.NewReader(archive)
 	actualFiles := make([][]string, 0, 10)
-	i := 0
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
 		require.NoError(t, err)
+		if hdr.Typeflag == tar.TypeXGlobalHeader {
+			continue
+		}
 		buf := new(bytes.Buffer)
 		_, err = buf.ReadFrom(tr)
 		require.NoError(t, err)
 		content := buf.String()
 		actualFiles = append(actualFiles, []string{hdr.Name, content})
-		i++
 	}
 	assert.Equal(t, expectedFiles, actualFiles)
 }
