@@ -314,7 +314,7 @@ func RebaseArchiveEntries(srcContent io.Reader, oldBase, newBase string) io.Read
 
 	go func() {
 		srcTar := tar.NewReader(srcContent)
-		rebasedTar := tar.NewWriter(w)
+		rebasedTar := NewCanonicalTarWriter(w)
 
 		for {
 			hdr, err := srcTar.Next()

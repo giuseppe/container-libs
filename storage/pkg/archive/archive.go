@@ -280,7 +280,7 @@ func ReplaceFileTarWrapper(inputTarStream io.ReadCloser, mods map[string]TarModi
 
 	go func() {
 		tarReader := tar.NewReader(inputTarStream)
-		tarWriter := tar.NewWriter(pipeWriter)
+		tarWriter := NewCanonicalTarWriter(pipeWriter)
 		defer inputTarStream.Close()
 		defer tarWriter.Close()
 
@@ -475,7 +475,7 @@ type TarWhiteoutConverter interface {
 }
 
 type tarWriter struct {
-	TarWriter *tar.Writer
+	TarWriter *CanonicalTarWriter
 	Buffer    *bufio.Writer
 
 	// for hardlink mapping
@@ -501,7 +501,7 @@ type tarWriter struct {
 func newTarWriter(idMapping *idtools.IDMappings, writer io.Writer, chownOpts *idtools.IDPair, timestamp *time.Time) *tarWriter {
 	return &tarWriter{
 		SeenFiles:  make(map[uint64]string),
-		TarWriter:  tar.NewWriter(writer),
+		TarWriter:  NewCanonicalTarWriter(writer),
 		Buffer:     pools.BufioWriter32KPool.Get(nil),
 		IDMappings: idMapping,
 		ChownOpts:  chownOpts,
@@ -1408,7 +1408,7 @@ func (archiver *Archiver) CopyFileWithTar(src, dst string) (err error) {
 			return err
 		}
 
-		tw := tar.NewWriter(w)
+		tw := NewCanonicalTarWriter(w)
 		defer tw.Close()
 		if err := tw.WriteHeader(hdr); err != nil {
 			return err

@@ -40,6 +40,12 @@ func NewCanonicalTarWriter(w io.Writer) *CanonicalTarWriter {
 	return &CanonicalTarWriter{w: w}
 }
 
+// NewCanonicalTarWriterRaw creates a writer that produces canonical tar
+// headers without the global pax header.
+func NewCanonicalTarWriterRaw(w io.Writer) *CanonicalTarWriter {
+	return &CanonicalTarWriter{w: w, globalDone: true}
+}
+
 func (cw *CanonicalTarWriter) writeGlobalHeader() error {
 	if cw.globalDone {
 		return nil

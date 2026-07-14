@@ -25,7 +25,7 @@ import (
 func Generate(input ...string) (io.Reader, error) {
 	files := parseStringPairs(input...)
 	buf := new(bytes.Buffer)
-	tw := tar.NewWriter(buf)
+	tw := NewCanonicalTarWriter(buf)
 	for _, file := range files {
 		name, content := file[0], file[1]
 		hdr := &tar.Header{
