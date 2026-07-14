@@ -511,10 +511,18 @@ func newTarWriter(idMapping *idtools.IDMappings, writer io.Writer, chownOpts *id
 
 // canonicalTarName provides a platform-independent and consistent posix-style
 // path for files and directories to be archived regardless of the platform.
+// All paths are prefixed with "./" per the canonical tar spec.
 func canonicalTarName(name string, isDir bool) (string, error) {
 	name, err := CanonicalTarNameForPath(name)
 	if err != nil {
 		return "", err
+	}
+
+	// Prefix with "./" per canonical tar spec.
+	if name == "." || name == "./" {
+		name = "./"
+	} else if !strings.HasPrefix(name, "./") {
+		name = "./" + name
 	}
 
 	// suffix with '/' for directories
@@ -610,11 +618,11 @@ func (ta *tarWriter) prepareAddFile(path, name string) (*addFileData, error) {
 	if ta.ChownOpts != nil {
 		hdr.Uid = ta.ChownOpts.UID
 		hdr.Gid = ta.ChownOpts.GID
-		// Don’t expose the user names from the local system; they probably don’t match the ta.ChownOpts value anyway,
-		// and they unnecessarily give recipients of the tar file potentially private data.
-		hdr.Uname = ""
-		hdr.Gname = ""
 	}
+
+	// Canonical tar format does not include user/group names.
+	hdr.Uname = ""
+	hdr.Gname = ""
 
 	// if override timestamp set, replace all times with this
 	if ta.Timestamp != nil {

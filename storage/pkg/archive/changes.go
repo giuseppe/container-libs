@@ -464,13 +464,10 @@ func ExportChanges(dir string, changes []Change, uidMaps, gidMaps []idtools.IDMa
 				whiteOutDir := filepath.Dir(change.Path)
 				whiteOutBase := filepath.Base(change.Path)
 				whiteOut := filepath.Join(whiteOutDir, WhiteoutPrefix+whiteOutBase)
-				timestamp := time.Now()
 				hdr := &tar.Header{
-					Name:       whiteOut[1:],
-					Size:       0,
-					ModTime:    timestamp,
-					AccessTime: timestamp,
-					ChangeTime: timestamp,
+					Name: "./" + whiteOut[1:],
+					Size: 0,
+					Mode: 0o644,
 				}
 				if err := ta.TarWriter.WriteHeader(hdr); err != nil {
 					logrus.Debugf("Can't write whiteout header: %s", err)
