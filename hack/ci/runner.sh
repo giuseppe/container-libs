@@ -175,7 +175,8 @@ run_image_skopeo() {
 
     GOSRC="$(pwd)"
     SKOPEO_PATH="/var/tmp/skopeo"
-    SKOPEO_CIDEV_CONTAINER_FQIN="ghcr.io/podman-container-tools/skopeo_cidev:20260616t073924z" # FIXME: should be Renovate-managed
+    AUTOMATION_RELEASE="${AUTOMATION_RELEASE:-$(get_automation_release)}"
+    SKOPEO_CIDEV_CONTAINER_FQIN="ghcr.io/podman-container-tools/skopeo_cidev:$AUTOMATION_RELEASE"
 
     sudo podman pull --quiet "$SKOPEO_CIDEV_CONTAINER_FQIN"
     ctr_id=$(sudo podman create "$SKOPEO_CIDEV_CONTAINER_FQIN")
