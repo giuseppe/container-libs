@@ -3,6 +3,7 @@ package chunked
 import (
 	archivetar "archive/tar"
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"github.com/vbatts/tar-split/archive/tar"
 	"github.com/vbatts/tar-split/tar/asm"
 	"github.com/vbatts/tar-split/tar/storage"
+	"go.podman.io/storage/pkg/archive"
 	"go.podman.io/storage/pkg/chunked/internal/minimal"
 	"golang.org/x/sys/unix"
 )
@@ -44,6 +46,48 @@ func typeToTarType(t string) (byte, error) {
 		return 0, fmt.Errorf("unknown type: %v", t)
 	}
 	return r, nil
+}
+
+func fileMetadataToTarHeader(fm *minimal.FileMetadata) (*archivetar.Header, error) {
+	typeflag, err := typeToTarType(fm.Type)
+	if err != nil {
+		return nil, err
+	}
+
+	hdr := &archivetar.Header{
+		Typeflag: typeflag,
+		Name:     fm.Name,
+		Linkname: fm.Linkname,
+		Mode:     fm.Mode,
+		Size:     fm.Size,
+		Uid:      fm.UID,
+		Gid:      fm.GID,
+		Devmajor: fm.Devmajor,
+		Devminor: fm.Devminor,
+	}
+
+	if fm.ModTime != nil {
+		hdr.ModTime = *fm.ModTime
+	}
+	if fm.AccessTime != nil {
+		hdr.AccessTime = *fm.AccessTime
+	}
+	if fm.ChangeTime != nil {
+		hdr.ChangeTime = *fm.ChangeTime
+	}
+
+	if len(fm.Xattrs) > 0 {
+		hdr.PAXRecords = make(map[string]string)
+		for key, b64val := range fm.Xattrs {
+			decoded, err := base64.StdEncoding.DecodeString(b64val)
+			if err != nil {
+				return nil, fmt.Errorf("decoding xattr %q: %w", key, err)
+			}
+			hdr.PAXRecords[archive.PaxSchilyXattr+key] = string(decoded)
+		}
+	}
+
+	return hdr, nil
 }
 
 // readEstargzChunkedManifest reads the estargz manifest from the seekable stream blobStream.

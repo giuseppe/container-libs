@@ -939,6 +939,9 @@ func unmarshalToc(manifest []byte) (*minimal.TOC, error) {
 			}
 			toc.TarSplitDigest = d
 
+		case "canonicaltar": // strings.ToLower("canonicalTar")
+			toc.CanonicalTar = iter.ReadBool()
+
 		default:
 			iter.Skip()
 		}

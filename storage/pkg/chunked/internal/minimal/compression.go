@@ -42,6 +42,9 @@ type TOC struct {
 	// TarSplitDigest is the checksum of the "tar-split" data which
 	// is included as a distinct skippable zstd frame before the TOC.
 	TarSplitDigest digest.Digest `json:"tarSplitDigest,omitempty"`
+	// CanonicalTar indicates that the tar stream was written in canonical format,
+	// allowing tar-split data to be regenerated from the TOC alone.
+	CanonicalTar bool `json:"canonicalTar,omitempty"`
 }
 
 // FileMetadata is an entry in the TOC that includes both generic file metadata
