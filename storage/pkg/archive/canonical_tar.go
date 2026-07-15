@@ -2,6 +2,7 @@ package archive
 
 import (
 	"archive/tar"
+	"bytes"
 	"fmt"
 	"io"
 	"path"
@@ -93,6 +94,29 @@ func (cw *CanonicalTarWriter) WriteHeader(h *tar.Header) error {
 	}
 
 	return nil
+}
+
+// WriteHeaderOnly writes a tar header without expecting content to follow.
+// This is useful for generating header bytes for tar-split metadata.
+func (cw *CanonicalTarWriter) WriteHeaderOnly(h *tar.Header) error {
+	if err := cw.WriteHeader(h); err != nil {
+		return err
+	}
+	cw.contentSize = 0
+	cw.bytesWritten = 0
+	return nil
+}
+
+// CanonicalHeaderBytes returns the raw canonical tar header bytes for a
+// given tar header, without the global pax header. This is used to
+// generate tar-split segment data from TOC entries.
+func CanonicalHeaderBytes(h *tar.Header) ([]byte, error) {
+	var buf bytes.Buffer
+	cw := NewCanonicalTarWriterRaw(&buf)
+	if err := cw.WriteHeaderOnly(h); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 // Write writes file content data.
