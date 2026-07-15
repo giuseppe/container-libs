@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"hash/crc64"
 	"io"
 	"maps"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/klauspost/pgzip"
 	digest "github.com/opencontainers/go-digest"
+	"github.com/sirupsen/logrus"
 	"github.com/vbatts/tar-split/archive/tar"
 	"github.com/vbatts/tar-split/tar/asm"
 	"github.com/vbatts/tar-split/tar/storage"
@@ -431,6 +433,173 @@ func tarSizeFromTarSplit(tarSplit io.Reader) (int64, error) {
 		}
 	}
 	return res, nil
+}
+
+// canonicalGlobalHeaderBytes returns the raw bytes for the canonical tar global
+// pax header (header block + pax data block).
+func canonicalGlobalHeaderBytes() ([]byte, error) {
+	var buf bytes.Buffer
+	cw := archive.NewCanonicalTarWriter(&buf)
+	if err := cw.Close(); err != nil {
+		return nil, err
+	}
+	data := buf.Bytes()
+	// The global header is the first 2 blocks (header + pax data).
+	// The remaining 2 blocks are the end-of-archive marker.
+	return data[:len(data)-1024], nil
+}
+
+func roundUpBlock(n int64) int64 {
+	const blockSize = 512
+	if remainder := n % blockSize; remainder != 0 {
+		return n + (blockSize - remainder)
+	}
+	return n
+}
+
+// tarSizeFromTOC computes the total canonical tarball size from the TOC entries.
+func tarSizeFromTOC(toc *minimal.TOC) (int64, error) {
+	globalHeader, err := canonicalGlobalHeaderBytes()
+	if err != nil {
+		return -1, err
+	}
+	var size int64
+	size += int64(len(globalHeader))
+
+	for i := range toc.Entries {
+		e := &toc.Entries[i]
+		if e.Type == minimal.TypeChunk {
+			continue
+		}
+		hdr, err := fileMetadataToTarHeader(e)
+		if err != nil {
+			return -1, fmt.Errorf("converting %q to tar header: %w", e.Name, err)
+		}
+		headerBytes, err := archive.CanonicalHeaderBytes(hdr)
+		if err != nil {
+			return -1, fmt.Errorf("getting canonical header bytes for %q: %w", e.Name, err)
+		}
+		size += int64(len(headerBytes))
+		if hdr.Typeflag == archivetar.TypeReg || hdr.Typeflag == archivetar.TypeRegA {
+			size += roundUpBlock(hdr.Size)
+		}
+	}
+
+	size += 1024 // end-of-archive marker
+	logrus.Debugf("zstd:chunked: computed canonical tar size=%d from %d TOC entries", size, len(toc.Entries))
+	return size, nil
+}
+
+// generateTarSplitFromTOC generates tar-split metadata from the TOC and staged files.
+// This is used for canonical tar layers that don't embed tar-split data in the blob.
+func generateTarSplitFromTOC(toc *minimal.TOC, fg storage.FileGetter, tmpDir string) (*os.File, error) {
+	logrus.Debugf("zstd:chunked: generating tar-split from TOC with %d entries", len(toc.Entries))
+	outFile, err := openTmpFile(tmpDir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			outFile.Close()
+		}
+	}()
+
+	packer := storage.NewJSONPacker(outFile)
+
+	globalHeader, err := canonicalGlobalHeaderBytes()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := packer.AddEntry(storage.Entry{
+		Type:    storage.SegmentType,
+		Payload: globalHeader,
+	}); err != nil {
+		return nil, err
+	}
+	entry := storage.Entry{
+		Type: storage.FileType,
+		Size: 0,
+	}
+	entry.SetName("GlobalHead.0.0")
+	if _, err := packer.AddEntry(entry); err != nil {
+		return nil, err
+	}
+
+	crcHash := crc64.New(storage.CRCTable)
+
+	for i := range toc.Entries {
+		e := &toc.Entries[i]
+		if e.Type == minimal.TypeChunk {
+			continue
+		}
+
+		hdr, err := fileMetadataToTarHeader(e)
+		if err != nil {
+			return nil, fmt.Errorf("converting %q to tar header: %w", e.Name, err)
+		}
+		headerBytes, err := archive.CanonicalHeaderBytes(hdr)
+		if err != nil {
+			return nil, fmt.Errorf("getting canonical header bytes for %q: %w", e.Name, err)
+		}
+
+		if _, err := packer.AddEntry(storage.Entry{
+			Type:    storage.SegmentType,
+			Payload: headerBytes,
+		}); err != nil {
+			return nil, err
+		}
+
+		fileEntry := storage.Entry{
+			Type: storage.FileType,
+			Size: hdr.Size,
+		}
+		fileEntry.SetName(hdr.Name)
+
+		if hdr.Size > 0 && (hdr.Typeflag == archivetar.TypeReg || hdr.Typeflag == archivetar.TypeRegA) {
+			fh, err := fg.Get(hdr.Name)
+			if err != nil {
+				return nil, fmt.Errorf("getting file %q: %w", hdr.Name, err)
+			}
+			crcHash.Reset()
+			if _, err := io.Copy(crcHash, fh); err != nil {
+				fh.Close()
+				return nil, fmt.Errorf("computing crc64 for %q: %w", hdr.Name, err)
+			}
+			fh.Close()
+			fileEntry.Payload = crcHash.Sum(nil)
+		}
+
+		if _, err := packer.AddEntry(fileEntry); err != nil {
+			return nil, err
+		}
+
+		if hdr.Size > 0 && (hdr.Typeflag == archivetar.TypeReg || hdr.Typeflag == archivetar.TypeRegA) {
+			paddingSize := roundUpBlock(hdr.Size) - hdr.Size
+			if paddingSize > 0 {
+				padding := make([]byte, paddingSize)
+				if _, err := packer.AddEntry(storage.Entry{
+					Type:    storage.SegmentType,
+					Payload: padding,
+				}); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+
+	var endOfArchive [1024]byte
+	if _, err := packer.AddEntry(storage.Entry{
+		Type:    storage.SegmentType,
+		Payload: endOfArchive[:],
+	}); err != nil {
+		return nil, err
+	}
+
+	if _, err := outFile.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	logrus.Debugf("zstd:chunked: tar-split generated successfully from TOC")
+	return outFile, nil
 }
 
 // ensureTimePointersMatch ensures that a and b are equal
