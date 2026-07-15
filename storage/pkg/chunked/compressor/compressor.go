@@ -6,13 +6,11 @@ package compressor
 
 import (
 	"bufio"
-	"bytes"
+	"fmt"
 	"io"
 
 	"github.com/opencontainers/go-digest"
 	"github.com/vbatts/tar-split/archive/tar"
-	"github.com/vbatts/tar-split/tar/asm"
-	"github.com/vbatts/tar-split/tar/storage"
 	"go.podman.io/storage/pkg/chunked/internal/minimal"
 	"go.podman.io/storage/pkg/ioutils"
 )
@@ -197,241 +195,185 @@ type chunk struct {
 	ChunkType   string
 }
 
-type tarSplitData struct {
-	compressed          *bytes.Buffer
-	digester            digest.Digester
-	uncompressedCounter *ioutils.WriteCounter
-	zstd                minimal.ZstdWriter
-	packer              storage.Packer
-}
-
-func newTarSplitData(createZstdWriter minimal.CreateZstdWriterFunc) (*tarSplitData, error) {
-	compressed := bytes.NewBuffer(nil)
-	digester := digest.Canonical.Digester()
-
-	zstdWriter, err := createZstdWriter(io.MultiWriter(compressed, digester.Hash()))
-	if err != nil {
-		return nil, err
-	}
-
-	uncompressedCounter := ioutils.NewWriteCounter(zstdWriter)
-	metaPacker := storage.NewJSONPacker(uncompressedCounter)
-
-	return &tarSplitData{
-		compressed:          compressed,
-		digester:            digester,
-		uncompressedCounter: uncompressedCounter,
-		zstd:                zstdWriter,
-		packer:              metaPacker,
-	}, nil
-}
-
 func writeZstdChunkedStream(destFile io.Writer, outMetadata map[string]string, reader io.Reader, createZstdWriter minimal.CreateZstdWriterFunc) error {
 	// total written so far.  Used to retrieve partial offsets in the file
 	dest := ioutils.NewWriteCounter(destFile)
 
-	tarSplitData, err := newTarSplitData(createZstdWriter)
+	tr := tar.NewReader(reader)
+	tr.RawAccounting = true
+
+	buf := make([]byte, 4096)
+
+	zstdWriter, err := createZstdWriter(dest)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		if tarSplitData.zstd != nil {
-			tarSplitData.zstd.Close()
+		if zstdWriter != nil {
+			zstdWriter.Close()
 		}
 	}()
 
-	// Scope the NewInputTarStreamWithDone defer so we wait for done before
-	// returning to the outer function, which then closes tarSplitData.zstd.
-	metadata, err := func() (retMetadata []minimal.FileMetadata, retErr error) {
-		its, done, err := asm.NewInputTarStreamWithDone(reader, tarSplitData.packer, nil)
+	restartCompression := func() (int64, error) {
+		var offset int64
+		if zstdWriter != nil {
+			if err := zstdWriter.Close(); err != nil {
+				return 0, err
+			}
+			offset = dest.Count
+			zstdWriter.Reset(dest)
+		}
+		return offset, nil
+	}
+
+	isCanonicalTar := false
+
+	var metadata []minimal.FileMetadata
+	for {
+		hdr, err := tr.Next()
 		if err != nil {
-			return nil, err
-		}
-		defer func() {
-			its.Close()
-			if doneErr := <-done; doneErr != nil && retErr == nil {
-				retErr = doneErr
+			if err == io.EOF {
+				break
 			}
-		}()
-
-		tr := tar.NewReader(its)
-		tr.RawAccounting = true
-
-		buf := make([]byte, 4096)
-
-		zstdWriter, err := createZstdWriter(dest)
-		if err != nil {
-			return nil, err
-		}
-		defer func() {
-			if zstdWriter != nil {
-				zstdWriter.Close()
-			}
-		}()
-
-		restartCompression := func() (int64, error) {
-			var offset int64
-			if zstdWriter != nil {
-				if err := zstdWriter.Close(); err != nil {
-					return 0, err
-				}
-				offset = dest.Count
-				zstdWriter.Reset(dest)
-			}
-			return offset, nil
-		}
-
-		var metadata []minimal.FileMetadata
-		for {
-			hdr, err := tr.Next()
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				return nil, err
-			}
-
-			rawBytes := tr.RawBytes()
-			if _, err := zstdWriter.Write(rawBytes); err != nil {
-				return nil, err
-			}
-
-			payloadDigester := digest.Canonical.Digester()
-			chunkDigester := digest.Canonical.Digester()
-
-			// Now handle the payload, if any
-			startOffset := int64(0)
-			lastOffset := int64(0)
-			lastChunkOffset := int64(0)
-
-			checksum := ""
-
-			chunks := []chunk{}
-
-			hf := &holesFinder{
-				threshold: holesThreshold,
-				reader:    bufio.NewReader(tr),
-			}
-
-			rcReader := &rollingChecksumReader{
-				reader:  hf,
-				rollsum: NewRollSum(),
-			}
-
-			payloadDest := io.MultiWriter(payloadDigester.Hash(), chunkDigester.Hash(), zstdWriter)
-			for {
-				mustSplit, read, errRead := rcReader.Read(buf)
-				if errRead != nil && errRead != io.EOF {
-					return nil, errRead
-				}
-				// restart the compression only if there is a payload.
-				if read > 0 {
-					if startOffset == 0 {
-						startOffset, err = restartCompression()
-						if err != nil {
-							return nil, err
-						}
-						lastOffset = startOffset
-					}
-
-					if _, err := payloadDest.Write(buf[:read]); err != nil {
-						return nil, err
-					}
-				}
-				if (mustSplit || errRead == io.EOF) && startOffset > 0 {
-					off, err := restartCompression()
-					if err != nil {
-						return nil, err
-					}
-
-					chunkSize := rcReader.WrittenOut - lastChunkOffset
-					if chunkSize > 0 {
-						chunkType := minimal.ChunkTypeData
-						if rcReader.IsLastChunkZeros {
-							chunkType = minimal.ChunkTypeZeros
-						}
-
-						chunks = append(chunks, chunk{
-							ChunkOffset: lastChunkOffset,
-							Offset:      lastOffset,
-							Checksum:    chunkDigester.Digest().String(),
-							ChunkSize:   chunkSize,
-							ChunkType:   chunkType,
-						})
-					}
-
-					lastOffset = off
-					lastChunkOffset = rcReader.WrittenOut
-					chunkDigester = digest.Canonical.Digester()
-					payloadDest = io.MultiWriter(payloadDigester.Hash(), chunkDigester.Hash(), zstdWriter)
-				}
-				if errRead == io.EOF {
-					if startOffset > 0 {
-						checksum = payloadDigester.Digest().String()
-					}
-					break
-				}
-			}
-
-			mainEntry, err := minimal.NewFileMetadata(hdr)
-			if err != nil {
-				return nil, err
-			}
-			mainEntry.Digest = checksum
-			mainEntry.Offset = startOffset
-			mainEntry.EndOffset = lastOffset
-			entries := []minimal.FileMetadata{mainEntry}
-			for i := 1; i < len(chunks); i++ {
-				entries = append(entries, minimal.FileMetadata{
-					Type:        minimal.TypeChunk,
-					Name:        hdr.Name,
-					ChunkOffset: chunks[i].ChunkOffset,
-				})
-			}
-			if len(chunks) > 1 {
-				for i := range chunks {
-					entries[i].ChunkSize = chunks[i].ChunkSize
-					entries[i].Offset = chunks[i].Offset
-					entries[i].ChunkDigest = chunks[i].Checksum
-					entries[i].ChunkType = chunks[i].ChunkType
-				}
-			}
-			metadata = append(metadata, entries...)
+			return err
 		}
 
 		rawBytes := tr.RawBytes()
 		if _, err := zstdWriter.Write(rawBytes); err != nil {
-			return nil, err
+			return err
 		}
 
-		// make sure the entire tarball is flushed to the output as it might contain
-		// some trailing zeros that affect the checksum.
-		if _, err := io.Copy(zstdWriter, its); err != nil {
-			return nil, err
+		if hdr.Typeflag == tar.TypeXGlobalHeader {
+			if hdr.PAXRecords["canonical-tar"] == "1" {
+				isCanonicalTar = true
+			}
+			continue
 		}
 
-		if err := zstdWriter.Close(); err != nil {
-			return nil, err
+		payloadDigester := digest.Canonical.Digester()
+		chunkDigester := digest.Canonical.Digester()
+
+		// Now handle the payload, if any
+		startOffset := int64(0)
+		lastOffset := int64(0)
+		lastChunkOffset := int64(0)
+
+		checksum := ""
+
+		chunks := []chunk{}
+
+		hf := &holesFinder{
+			threshold: holesThreshold,
+			reader:    bufio.NewReader(tr),
 		}
-		zstdWriter = nil
-		return metadata, nil
-	}()
-	if err != nil {
+
+		rcReader := &rollingChecksumReader{
+			reader:  hf,
+			rollsum: NewRollSum(),
+		}
+
+		payloadDest := io.MultiWriter(payloadDigester.Hash(), chunkDigester.Hash(), zstdWriter)
+		for {
+			mustSplit, read, errRead := rcReader.Read(buf)
+			if errRead != nil && errRead != io.EOF {
+				return errRead
+			}
+			// restart the compression only if there is a payload.
+			if read > 0 {
+				if startOffset == 0 {
+					startOffset, err = restartCompression()
+					if err != nil {
+						return err
+					}
+					lastOffset = startOffset
+				}
+
+				if _, err := payloadDest.Write(buf[:read]); err != nil {
+					return err
+				}
+			}
+			if (mustSplit || errRead == io.EOF) && startOffset > 0 {
+				off, err := restartCompression()
+				if err != nil {
+					return err
+				}
+
+				chunkSize := rcReader.WrittenOut - lastChunkOffset
+				if chunkSize > 0 {
+					chunkType := minimal.ChunkTypeData
+					if rcReader.IsLastChunkZeros {
+						chunkType = minimal.ChunkTypeZeros
+					}
+
+					chunks = append(chunks, chunk{
+						ChunkOffset: lastChunkOffset,
+						Offset:      lastOffset,
+						Checksum:    chunkDigester.Digest().String(),
+						ChunkSize:   chunkSize,
+						ChunkType:   chunkType,
+					})
+				}
+
+				lastOffset = off
+				lastChunkOffset = rcReader.WrittenOut
+				chunkDigester = digest.Canonical.Digester()
+				payloadDest = io.MultiWriter(payloadDigester.Hash(), chunkDigester.Hash(), zstdWriter)
+			}
+			if errRead == io.EOF {
+				if startOffset > 0 {
+					checksum = payloadDigester.Digest().String()
+				}
+				break
+			}
+		}
+
+		mainEntry, err := minimal.NewFileMetadata(hdr)
+		if err != nil {
+			return err
+		}
+		mainEntry.Digest = checksum
+		mainEntry.Offset = startOffset
+		mainEntry.EndOffset = lastOffset
+		entries := []minimal.FileMetadata{mainEntry}
+		for i := 1; i < len(chunks); i++ {
+			entries = append(entries, minimal.FileMetadata{
+				Type:        minimal.TypeChunk,
+				Name:        hdr.Name,
+				ChunkOffset: chunks[i].ChunkOffset,
+			})
+		}
+		if len(chunks) > 1 {
+			for i := range chunks {
+				entries[i].ChunkSize = chunks[i].ChunkSize
+				entries[i].Offset = chunks[i].Offset
+				entries[i].ChunkDigest = chunks[i].Checksum
+				entries[i].ChunkType = chunks[i].ChunkType
+			}
+		}
+		metadata = append(metadata, entries...)
+	}
+
+	rawBytes := tr.RawBytes()
+	if _, err := zstdWriter.Write(rawBytes); err != nil {
 		return err
 	}
 
-	if err := tarSplitData.zstd.Close(); err != nil {
+	// flush any trailing bytes from the underlying reader (e.g. end-of-archive markers
+	// that the tar reader consumed but didn't surface via RawBytes).
+	if _, err := io.Copy(zstdWriter, reader); err != nil {
 		return err
 	}
-	tarSplitData.zstd = nil
 
-	ts := minimal.TarSplitData{
-		Data:             tarSplitData.compressed.Bytes(),
-		Digest:           tarSplitData.digester.Digest(),
-		UncompressedSize: tarSplitData.uncompressedCounter.Count,
+	if err := zstdWriter.Close(); err != nil {
+		return err
+	}
+	zstdWriter = nil
+
+	if !isCanonicalTar {
+		return fmt.Errorf("zstd:chunked compressor requires a canonical tar stream (missing global pax header with canonical-tar=1)")
 	}
 
-	return minimal.WriteZstdChunkedManifest(dest, outMetadata, uint64(dest.Count), &ts, metadata, createZstdWriter)
+	return minimal.WriteZstdChunkedManifest(dest, outMetadata, uint64(dest.Count), nil, metadata, createZstdWriter)
 }
 
 type zstdChunkedWriter struct {

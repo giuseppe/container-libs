@@ -199,9 +199,13 @@ func WriteZstdChunkedManifest(dest io.Writer, outMetadata map[string]string, off
 	manifestOffset := offset + zstdSkippableFrameHeader
 
 	toc := TOC{
-		Version:        1,
-		Entries:        metadata,
-		TarSplitDigest: tarSplitData.Digest,
+		Version: 1,
+		Entries: metadata,
+	}
+	if tarSplitData != nil {
+		toc.TarSplitDigest = tarSplitData.Digest
+	} else {
+		toc.CanonicalTar = true
 	}
 
 	json := jsoniter.ConfigCompatibleWithStandardLibrary
@@ -237,20 +241,22 @@ func WriteZstdChunkedManifest(dest io.Writer, outMetadata map[string]string, off
 		return err
 	}
 
-	tarSplitOffset := manifestOffset + uint64(len(compressedManifest)) + zstdSkippableFrameHeader
-	outMetadata[TarSplitInfoKey] = fmt.Sprintf("%d:%d:%d", tarSplitOffset, len(tarSplitData.Data), tarSplitData.UncompressedSize)
-	if err := appendZstdSkippableFrame(dest, tarSplitData.Data); err != nil {
-		return err
+	footer := ZstdChunkedFooterData{
+		ManifestType:       uint64(ManifestTypeCRFS),
+		Offset:             manifestOffset,
+		LengthCompressed:   uint64(len(compressedManifest)),
+		LengthUncompressed: uint64(len(manifest)),
 	}
 
-	footer := ZstdChunkedFooterData{
-		ManifestType:               uint64(ManifestTypeCRFS),
-		Offset:                     manifestOffset,
-		LengthCompressed:           uint64(len(compressedManifest)),
-		LengthUncompressed:         uint64(len(manifest)),
-		OffsetTarSplit:             tarSplitOffset,
-		LengthCompressedTarSplit:   uint64(len(tarSplitData.Data)),
-		LengthUncompressedTarSplit: uint64(tarSplitData.UncompressedSize),
+	if tarSplitData != nil {
+		tarSplitOffset := manifestOffset + uint64(len(compressedManifest)) + zstdSkippableFrameHeader
+		outMetadata[TarSplitInfoKey] = fmt.Sprintf("%d:%d:%d", tarSplitOffset, len(tarSplitData.Data), tarSplitData.UncompressedSize)
+		if err := appendZstdSkippableFrame(dest, tarSplitData.Data); err != nil {
+			return err
+		}
+		footer.OffsetTarSplit = tarSplitOffset
+		footer.LengthCompressedTarSplit = uint64(len(tarSplitData.Data))
+		footer.LengthUncompressedTarSplit = uint64(tarSplitData.UncompressedSize)
 	}
 
 	manifestDataLE := footerDataToBlob(footer)
