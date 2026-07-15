@@ -203,6 +203,88 @@ func TestGenerateAndParseManifest(t *testing.T) {
 	assert.Equal(t, toc, *decodedTOC)
 }
 
+type seekableNoTarSplit struct {
+	data   []byte
+	offset uint64
+	length uint64
+	t      *testing.T
+}
+
+func (s seekableNoTarSplit) GetBlobAt(req []ImageSourceChunk) (chan io.ReadCloser, chan error, error) {
+	if len(req) != 1 {
+		s.t.Fatalf("Expected 1 chunk request, got %d", len(req))
+	}
+	if req[0].Offset != s.offset {
+		s.t.Fatal("Invalid offset requested")
+	}
+	if req[0].Length != s.length {
+		s.t.Fatal("Invalid length requested")
+	}
+
+	m := make(chan io.ReadCloser)
+	e := make(chan error)
+
+	go func() {
+		m <- io.NopCloser(bytes.NewReader(s.data))
+		close(m)
+		close(e)
+	}()
+
+	return m, e, nil
+}
+
+func TestCanonicalTarManifest(t *testing.T) {
+	annotations := make(map[string]string)
+	offsetManifest := uint64(100000)
+
+	var b bytes.Buffer
+	writer := bufio.NewWriter(&b)
+
+	createZstdWriter := func(dest io.Writer) (minimal.ZstdWriter, error) {
+		return minimal.ZstdWriterWithLevel(dest, 9)
+	}
+
+	// Write manifest with nil tarSplitData (canonical tar)
+	err := minimal.WriteZstdChunkedManifest(writer, annotations, offsetManifest, nil, someFiles[:], createZstdWriter)
+	require.NoError(t, err)
+	require.NoError(t, writer.Flush())
+
+	// Should have ManifestInfoKey but NOT TarSplitInfoKey
+	assert.NotEmpty(t, annotations[minimal.ManifestInfoKey])
+	assert.Empty(t, annotations[minimal.TarSplitInfoKey])
+
+	var offset, length, lengthUncompressed, manifestType uint64
+	_, err = fmt.Sscanf(annotations[minimal.ManifestInfoKey], "%d:%d:%d:%d", &offset, &length, &lengthUncompressed, &manifestType)
+	require.NoError(t, err)
+	assert.Equal(t, offsetManifest+8, offset)
+	assert.Equal(t, uint64(minimal.ManifestTypeCRFS), manifestType)
+
+	data := b.Bytes()[offset-offsetManifest : offset-offsetManifest+length]
+	s := seekableNoTarSplit{
+		data:   data,
+		offset: offset,
+		length: length,
+		t:      t,
+	}
+
+	tocDigest, err := toc.GetTOCDigest(annotations)
+	require.NoError(t, err)
+	require.NotNil(t, tocDigest)
+	manifest, decodedTOC, tarSplit, _, err := readZstdChunkedManifest(t.TempDir(), s, *tocDigest, annotations, true)
+	require.NoError(t, err)
+
+	// No tar-split should be returned
+	assert.Nil(t, tarSplit)
+
+	var parsedTOC minimal.TOC
+	require.NoError(t, json.Unmarshal(manifest, &parsedTOC))
+	assert.Equal(t, 1, parsedTOC.Version)
+	assert.True(t, parsedTOC.CanonicalTar)
+	assert.Empty(t, parsedTOC.TarSplitDigest)
+	assert.Equal(t, len(someFiles), len(parsedTOC.Entries))
+	assert.Equal(t, parsedTOC, *decodedTOC)
+}
+
 func TestGetTarType(t *testing.T) {
 	for k, v := range typesToTar {
 		r, err := typeToTarType(k)

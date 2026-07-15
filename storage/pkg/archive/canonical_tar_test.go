@@ -429,6 +429,77 @@ func TestCanonicalSubSecondMtime(t *testing.T) {
 	assert.Equal(t, ts.Nanosecond(), entry.ModTime.Nanosecond())
 }
 
+func TestCanonicalHeaderBytes(t *testing.T) {
+	hdr := &tar.Header{
+		Name:     "./usr/bin/hello",
+		Mode:     0o755,
+		Typeflag: tar.TypeReg,
+		Size:     100,
+	}
+	headerBytes, err := CanonicalHeaderBytes(hdr)
+	require.NoError(t, err)
+	require.NotEmpty(t, headerBytes)
+
+	// Should be a multiple of 512
+	assert.Equal(t, 0, len(headerBytes)%blockSize)
+
+	// Should NOT contain the global header (no 'g' typeflag)
+	assert.Equal(t, byte('0'), headerBytes[156])
+
+	// The header bytes should be parseable by a standard tar reader
+	tr := tar.NewReader(bytes.NewReader(headerBytes))
+	entry, err := tr.Next()
+	require.NoError(t, err)
+	assert.Equal(t, "./usr/bin/hello", entry.Name)
+	assert.Equal(t, int64(0o755), entry.Mode)
+}
+
+func TestCanonicalHeaderBytesLongPath(t *testing.T) {
+	longPath := "./" + strings.Repeat("subdir/", 15) + "file.txt"
+	require.True(t, len(longPath) > 100)
+
+	hdr := &tar.Header{
+		Name:     longPath,
+		Mode:     0o644,
+		Typeflag: tar.TypeReg,
+		Size:     0,
+	}
+	headerBytes, err := CanonicalHeaderBytes(hdr)
+	require.NoError(t, err)
+
+	// Should include pax extended header + ustar header
+	require.True(t, len(headerBytes) > blockSize)
+
+	// Parse back
+	tr := tar.NewReader(bytes.NewReader(headerBytes))
+	entry, err := tr.Next()
+	require.NoError(t, err)
+	assert.Equal(t, longPath, entry.Name)
+}
+
+func TestWriteHeaderOnly(t *testing.T) {
+	var buf bytes.Buffer
+	cw := NewCanonicalTarWriterRaw(&buf)
+
+	// WriteHeaderOnly should not require content to follow
+	require.NoError(t, cw.WriteHeaderOnly(&tar.Header{
+		Name:     "./file1",
+		Mode:     0o644,
+		Typeflag: tar.TypeReg,
+		Size:     100,
+	}))
+
+	// Should be able to write another header immediately
+	require.NoError(t, cw.WriteHeaderOnly(&tar.Header{
+		Name:     "./file2",
+		Mode:     0o644,
+		Typeflag: tar.TypeReg,
+		Size:     200,
+	}))
+
+	require.NoError(t, cw.Close())
+}
+
 func TestCanonicalRawWriter(t *testing.T) {
 	var buf bytes.Buffer
 	cw := NewCanonicalTarWriterRaw(&buf)
