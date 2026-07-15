@@ -67,6 +67,7 @@ type chunkedDiffer struct {
 	// Initial parameters, used throughout and never modified
 	// ==========
 	pullOptions pullOptions
+	tmpDir      string
 	stream      ImageSourceSeekable
 	// blobDigest is the digest of the whole compressed layer.  It is used if
 	// convertToZstdChunked to validate a layer when it is converted since there
@@ -93,6 +94,9 @@ type chunkedDiffer struct {
 	toc                 *minimal.TOC // The parsed contents of manifest, or nil if not yet available
 	tarSplit            *os.File
 	uncompressedTarSize int64 // -1 if unknown
+	// canonicalTar indicates the tar stream was written in canonical format,
+	// allowing tar-split to be regenerated from the TOC.
+	canonicalTar bool
 	// skipValidation is set to true if the individual files in
 	// the layer are trusted and should not be validated.
 	skipValidation bool
@@ -354,13 +358,22 @@ func makeZstdChunkedDiffer(store storage.Store, blobSize int64, tocDigest digest
 	}()
 
 	var uncompressedTarSize int64 = -1
+	isCanonicalTar := false
 	if tarSplit != nil {
+		logrus.Debugf("zstd:chunked: tar-split data found in blob, computing uncompressed size from tar-split")
 		if _, err := tarSplit.Seek(0, io.SeekStart); err != nil {
 			return nil, err
 		}
 		uncompressedTarSize, err = tarSizeFromTarSplit(tarSplit)
 		if err != nil {
 			return nil, fmt.Errorf("computing size from tar-split: %w", err)
+		}
+	} else if toc.CanonicalTar {
+		isCanonicalTar = true
+		logrus.Debugf("zstd:chunked: canonical tar format detected (no embedded tar-split), computing uncompressed size from TOC (%d entries)", len(toc.Entries))
+		uncompressedTarSize, err = tarSizeFromTOC(toc)
+		if err != nil {
+			return nil, fmt.Errorf("computing size from TOC: %w", err)
 		}
 	} else if !pullOptions.insecureAllowUnpredictableImageContents { // With no tar-split, we can't compute the traditional UncompressedDigest.
 		return nil, errFallbackCanConvert{
@@ -373,8 +386,12 @@ func makeZstdChunkedDiffer(store storage.Store, blobSize int64, tocDigest digest
 		return nil, err
 	}
 
+	logrus.Debugf("zstd:chunked: differ created: canonicalTar=%v, uncompressedTarSize=%d, hasTarSplit=%v, tocEntries=%d",
+		isCanonicalTar, uncompressedTarSize, tarSplit != nil, len(toc.Entries))
+
 	return &chunkedDiffer{
 		pullOptions: pullOptions,
+		tmpDir:      store.RunRoot(),
 		stream:      iss,
 		blobSize:    blobSize,
 
@@ -385,6 +402,7 @@ func makeZstdChunkedDiffer(store storage.Store, blobSize int64, tocDigest digest
 		manifest:            manifest,
 		toc:                 toc,
 		tarSplit:            tarSplit,
+		canonicalTar:        isCanonicalTar,
 		uncompressedTarSize: uncompressedTarSize,
 
 		layersCache:     layersCache,
@@ -1959,6 +1977,24 @@ func (c *chunkedDiffer) ApplyDiff(dest string, options *archive.TarOptions, diff
 	// via insecureAllowUnpredictableImageContents .
 	if output.UncompressedDigest == "" {
 		switch {
+		case c.canonicalTar && output.TarSplit == nil:
+			logrus.Debugf("zstd:chunked: generating tar-split from canonical tar TOC (%d entries)", len(toc.Entries))
+			fg := newStagedFileGetter(dirFile, flatPathNameMap)
+			tarSplitFile, err := generateTarSplitFromTOC(toc, fg, c.tmpDir)
+			if err != nil {
+				return output, fmt.Errorf("generating tar-split from TOC: %w", err)
+			}
+			output.TarSplit = tarSplitFile
+
+			logrus.Debugf("zstd:chunked: computing UncompressedDigest from generated tar-split")
+			metadata := tsStorage.NewJSONUnpacker(output.TarSplit)
+			fg = newStagedFileGetter(dirFile, flatPathNameMap)
+			digester := digest.Canonical.Digester()
+			if err := asm.WriteOutputTarStream(fg, metadata, digester.Hash()); err != nil {
+				return output, fmt.Errorf("digesting staged uncompressed stream: %w", err)
+			}
+			output.UncompressedDigest = digester.Digest()
+			logrus.Debugf("zstd:chunked: computed UncompressedDigest=%s from canonical tar", output.UncompressedDigest)
 		case c.pullOptions.insecureAllowUnpredictableImageContents:
 			// Oh well.  Skip the costly digest computation.
 		case output.TarSplit != nil:
