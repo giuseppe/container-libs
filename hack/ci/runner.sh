@@ -180,7 +180,7 @@ run_image_skopeo() {
 
 run_common() {
     cd common
-    NETAVARK_BINARY=/usr/local/libexec/podman/netavark
+    NETAVARK_BINARY=/usr/libexec/podman/netavark
     export NETAVARK_BINARY
 
     make build
