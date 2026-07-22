@@ -27,33 +27,6 @@ prepare_storage_env() {
     done
 }
 
-prepare_image_env() {
-    ROOTLESS_USER="testuser$$"
-    rootless_uid=$((RANDOM+1000))
-    rootless_gid=$((RANDOM+1000))
-    sudo groupadd -g $rootless_gid $ROOTLESS_USER
-    sudo useradd -g $rootless_gid -u $rootless_uid --no-user-group --create-home $ROOTLESS_USER
-
-    sudo mkdir -p "$(go env GOPATH)"
-    sudo chown -R $ROOTLESS_USER:$ROOTLESS_USER "$(go env GOPATH)"
-    sudo chown -R $ROOTLESS_USER:$ROOTLESS_USER "$(pwd)"
-
-    sudo mkdir -p "/run/user/$rootless_uid"
-    sudo chown $ROOTLESS_USER:$ROOTLESS_USER "/run/user/$rootless_uid"
-
-    sudo mkdir -p /root/.ssh "/home/$ROOTLESS_USER/.ssh"
-    sudo ssh-keygen -t ed25519 -P "" -f /root/.ssh/id_ed25519
-    sudo bash -c "cat /root/.ssh/*.pub >> /home/$ROOTLESS_USER/.ssh/authorized_keys"
-    sudo chmod -R 700 /root/.ssh "/home/$ROOTLESS_USER/.ssh"
-    sudo chown -R $ROOTLESS_USER:$ROOTLESS_USER "/home/$ROOTLESS_USER/.ssh"
-
-    sudo systemctl start sshd || sudo systemctl start ssh
-    sudo ssh-keyscan localhost > /tmp/known_hosts
-    sudo cp /tmp/known_hosts /root/.ssh/known_hosts
-
-    export ROOTLESS_USER rootless_uid
-}
-
 ###############################################################################
 # Test runners
 ###############################################################################
@@ -143,26 +116,22 @@ run_image() {
         sed -n 's/func \(Test[[:alnum:]]*\)(.*/^\1$$/p' |
         paste -sd "|" -)
     if [ -n "$test_filter" ]; then
-        sudo -E env "PATH=$PATH" "GOPATH=$GOPATH_DIR" "HOME=$HOME" \
+        sudo -E env "PATH=$PATH" "GOPATH=$GOPATH_DIR" \
             make test "BUILDTAGS=$BUILDTAGS" "TESTFLAGS=-v -run '$test_filter'" TEST_PACKAGES=./storage
     fi
 
+    # Restore permissions
+    sudo chown -R $(id -u):$(id -g) "$GOPATH_DIR"
+
     # Run rootless tests
     cleanup() {
-        sudo ssh -o StrictHostKeyChecking=no -i /root/.ssh/id_ed25519 \
-            $ROOTLESS_USER@localhost \
-            "export XDG_RUNTIME_DIR=/run/user/$rootless_uid && export PATH=$GOROOT_DIR/bin:\$PATH && bash $GOSRC/image/signature/sigstore/rekor/testdata/start-rekor.sh ci remove" || true
-        sudo chown -R $(id -u):$(id -g) "$GOPATH_DIR" "$GOSRC"
+        $GOSRC/image/signature/sigstore/rekor/testdata/start-rekor.sh ci remove || true
     }
     trap cleanup EXIT
 
-    sudo ssh -o StrictHostKeyChecking=no -i /root/.ssh/id_ed25519 \
-        $ROOTLESS_USER@localhost \
-        "export XDG_RUNTIME_DIR=/run/user/$rootless_uid && export PATH=$GOROOT_DIR/bin:\$PATH && export GOPATH=$GOPATH_DIR && bash $GOSRC/image/signature/sigstore/rekor/testdata/start-rekor.sh ci"
-
-    sudo ssh -o StrictHostKeyChecking=no -i /root/.ssh/id_ed25519 \
-        $ROOTLESS_USER@localhost \
-        "export XDG_RUNTIME_DIR=/run/user/$rootless_uid && export PATH=$GOROOT_DIR/bin:\$PATH && export GOPATH=$GOPATH_DIR && cd $GOSRC/image && make test BUILDTAGS='$BUILDTAGS' TESTFLAGS=-v REKOR_SERVER_URL='http://127.0.0.1:3000'"
+    # start custom rekor which is needed by the tests
+    $GOSRC/image/signature/sigstore/rekor/testdata/start-rekor.sh ci
+    make test BUILDTAGS='$BUILDTAGS' TESTFLAGS=-v REKOR_SERVER_URL='http://127.0.0.1:3000'
 }
 
 run_image_skopeo() {
