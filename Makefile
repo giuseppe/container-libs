@@ -11,7 +11,11 @@ export PATH := $(PATH):${GOBIN}
 EPOCH_TEST_COMMIT ?= $(shell git merge-base $${DEST_BRANCH:-main} HEAD)
 
 
-validate: codespell git-validation lint
+validate: codespell git-validation lint check-ci-yaml
+
+.PHONY: check-ci-yaml
+check-ci-yaml:
+	hack/ci/ci_yaml_test.py
 
 .PHONY: codespell
 codespell:
@@ -41,7 +45,10 @@ install.tools: .install.gitvalidation .install.golangci-lint .install.md2man
 
 .PHONY: git-validation
 git-validation: .install.gitvalidation
-	git-validation -q -run DCO,short-subject,dangling-whitespace -range "$(EPOCH_TEST_COMMIT)..HEAD"
+ifndef EPOCH_TEST_COMMIT
+	$(error EPOCH_TEST_COMMIT is empty)
+endif
+	GIT_CHECK_EXCLUDE="./vendor" git-validation $(if $(CI),,-q) -run DCO,short-subject,dangling-whitespace -range "$(EPOCH_TEST_COMMIT)..HEAD"
 
 .PHONY: lint
 lint: .install.golangci-lint

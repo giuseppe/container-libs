@@ -1,41 +1,39 @@
 name: validate
 
 on:
-  push:
-    branches:
-      - main
-      - podman-*
-  pull_request:
-    branches:
-      - main
-      - podman-*
+  workflow_call:
 
-permissions: read-all
+permissions:
+  contents: read
 
 env:
   LINT_VERSION: v2.5.0
 
 jobs:
-  codespell:
+  basic:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     - name: install deps
       # Version of codespell bundled with Ubuntu is way old, so use pip.
       run: pip install --break-system-packages codespell==v2.4.1
     - name: run codespell
       run: make codespell
+    - name: check-ci-yaml
+      run: make check-ci-yaml
 
   lint:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: ./common
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         fetch-depth: 2
-    - uses: actions/setup-go@v6
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version: 1.25.x
         # By default the go cache will only use go.sum in the root which we don't have,
@@ -47,19 +45,19 @@ jobs:
         sudo apt-get -qq update
         sudo apt-get -qq install libseccomp-dev libgpgme-dev libbtrfs-dev libsubid-dev
     - name: lint-common
-      uses: golangci/golangci-lint-action@v8
+      uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
       with:
         version: "${{ env.LINT_VERSION }}"
         args: --verbose
         working-directory: ./common
     - name: lint-image
-      uses: golangci/golangci-lint-action@v8
+      uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
       with:
         version: "${{ env.LINT_VERSION }}"
         args: --verbose
         working-directory: ./image
     - name: lint-storage
-      uses: golangci/golangci-lint-action@v8
+      uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
       with:
         version: "${{ env.LINT_VERSION }}"
         args: --verbose
@@ -72,19 +70,36 @@ jobs:
     # only run this on PRs
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      # Base commit sha that we use the lint the commit from
+      EPOCH_TEST_COMMIT: "${{ github.event.pull_request.base.sha }}"
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         # By default github actions creates a merge commit which fails the validation,
         # we only must validate the actual commits of the author.
         ref: ${{ github.event.pull_request.head.sha }}
         fetch-depth: ${{ github.event.pull_request.commits }}
-    - uses: actions/setup-go@v6
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version: 1.25.x
         # See comment on lint task
         cache-dependency-path: "**/go.sum"
     - name: run git-validation
-      # We validate all commits as we only fetched the number of commits in the PR above,
-      # by default git-validation has some special github action handling but that seems broken.
-      run: make .install.gitvalidation && git-validation -no-github
+      run: make .install.gitvalidation && make git-validation
+
+  go-tidy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: 1.25.x
+        # See comment on lint task
+        cache-dependency-path: "**/go.sum"
+    - name: tidy
+      run: make tidy
+    - name: check if tree is clean
+      run: hack/tree_status.sh

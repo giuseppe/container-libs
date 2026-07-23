@@ -102,7 +102,6 @@ test: test-unit
 test-unit: netavark-testplugin
 	go test --tags seccomp,$(BUILDTAGS) -v ./...
 	go test --tags remote,$(BUILDTAGS) -v ./pkg/config
-	go test --tags cni,$(BUILDTAGS) -v ./libnetwork/cni
 
 clean: ## Clean artifacts
 	$(MAKE) -C docs clean

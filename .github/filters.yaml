@@ -1,0 +1,22 @@
+all:
+  - '.github/workflows/ci.yml'
+  - '.github/workflows/lima.yml'
+  - '.github/filters.yaml'
+  - 'hack/ci/**'
+  - 'Makefile'
+  - 'go.work'
+  - 'go.work.sum'
+
+storage:
+  - 'storage/**'
+
+image:
+  - 'image/**'
+  # image depends on storage, so any storage change must trigger image tests as well
+  - 'storage/**'
+
+common:
+  - 'common/**'
+  # see comment above, common depends on both image and storage
+  - 'image/**'
+  - 'storage/**'
