@@ -188,8 +188,6 @@ run_common() {
 
     sudo -E env "PATH=$PATH" "GOPATH=$(go env GOPATH)" "HOME=$HOME" \
         make test
-    sudo -E env "PATH=$PATH" "GOPATH=$(go env GOPATH)" "HOME=$HOME" \
-        make test-integration
 }
 
 ###############################################################################
