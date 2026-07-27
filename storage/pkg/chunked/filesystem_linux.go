@@ -112,6 +112,8 @@ func doHardLink(dirfd, srcFd int, destFile string) error {
 	return err
 }
 
+// copyFileContent copies the content of srcFd into a new file under dirfd.
+// The returned *os.File, when non-nil, is opened read-only.
 func copyFileContent(srcFd int, fileMetadata *fileMetadata, dirfd int, mode os.FileMode, useHardLinks bool) (*os.File, int64, error) {
 	destFile := fileMetadata.Name
 	src := procPathForFd(srcFd)
@@ -131,6 +133,11 @@ func copyFileContent(srcFd int, fileMetadata *fileMetadata, dirfd int, mode os.F
 		}
 	}
 
+	// Prevent concurrent fork(2) from duplicating this writable fd.
+	// See openDestinationFile for the full explanation.
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
+
 	// If the destination file already exists, we shouldn't blow it away
 	dstFile, err := openFileUnderRoot(dirfd, destFile, newFileFlags, mode)
 	if err != nil {
@@ -142,7 +149,13 @@ func copyFileContent(srcFd int, fileMetadata *fileMetadata, dirfd int, mode os.F
 		dstFile.Close()
 		return nil, -1, fmt.Errorf("copy to file %q under rootfs: %w", destFile, err)
 	}
-	return dstFile, st.Size(), nil
+
+	roFile, err := reopenFileReadOnly(dstFile)
+	dstFile.Close()
+	if err != nil {
+		return nil, -1, fmt.Errorf("reopen %q as read-only: %w", destFile, err)
+	}
+	return roFile, st.Size(), nil
 }
 
 func timeToTimespec(time *time.Time) (ts unix.Timespec) {

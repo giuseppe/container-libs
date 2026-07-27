@@ -26,10 +26,10 @@ func EnableVerity(description string, fd int) error {
 	}
 
 	_, _, e1 := syscall.Syscall(unix.SYS_IOCTL, uintptr(fd), uintptr(unix.FS_IOC_ENABLE_VERITY), uintptr(unsafe.Pointer(&enableArg)))
-	if e1 != 0 && !errors.Is(e1, unix.EEXIST) {
-		return fmt.Errorf("failed to enable verity for %q: %w", description, e1)
+	if e1 == 0 || errors.Is(e1, unix.EEXIST) {
+		return nil
 	}
-	return nil
+	return fmt.Errorf("failed to enable verity for %q: %w", description, e1)
 }
 
 // MeasureVerity measures and returns the verity digest for the file represented by 'fd'.

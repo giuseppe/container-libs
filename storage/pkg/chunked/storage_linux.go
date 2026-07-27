@@ -814,8 +814,16 @@ type destinationFile struct {
 }
 
 func openDestinationFile(dirfd int, metadata *fileMetadata, options *archive.TarOptions, skipValidation bool, recordFsVerity recordFsVerityFunc) (*destinationFile, error) {
+	// Hold ForkLock to prevent concurrent fork(2) from duplicating
+	// the writable fd, which causes ETXTBSY from FS_IOC_ENABLE_VERITY.
+	if recordFsVerity != nil {
+		syscall.ForkLock.RLock()
+	}
 	file, err := openFileUnderRoot(dirfd, metadata.Name, newFileFlags, 0)
 	if err != nil {
+		if recordFsVerity != nil {
+			syscall.ForkLock.RUnlock()
+		}
 		return nil, err
 	}
 
@@ -844,29 +852,19 @@ func openDestinationFile(dirfd int, metadata *fileMetadata, options *archive.Tar
 	}, nil
 }
 
-func (d *destinationFile) Close() (Err error) {
-	defer func() {
-		var roFile *os.File
-		var err error
-
-		if d.recordFsVerity != nil {
-			roFile, err = reopenFileReadOnly(d.file)
-			if err == nil {
-				defer roFile.Close()
-			} else if Err == nil {
-				Err = err
-			}
-		}
-
-		err = d.file.Close()
-		if Err == nil {
-			Err = err
-		}
-
-		if Err == nil && roFile != nil {
-			Err = d.recordFsVerity(d.metadata.Name, roFile)
-		}
-	}()
+func (d *destinationFile) Close() error {
+	if d.recordFsVerity != nil {
+		defer syscall.ForkLock.RUnlock()
+	}
+	// Reopen read-only while the writable fd is still valid, then
+	// close the writable fd immediately to minimize the window
+	// where fork(2) could duplicate it.
+	roFile, err := reopenFileReadOnly(d.file)
+	d.file.Close()
+	if err != nil {
+		return err
+	}
+	defer roFile.Close()
 
 	if !d.skipValidation {
 		manifestChecksum, err := digest.Parse(d.metadata.Digest)
@@ -883,7 +881,14 @@ func (d *destinationFile) Close() (Err error) {
 		mode = *d.options.ForceMask
 	}
 
-	return setFileAttrs(d.dirfd, d.file, mode, d.metadata, d.options, false)
+	if err := setFileAttrs(d.dirfd, roFile, mode, d.metadata, d.options, false); err != nil {
+		return err
+	}
+
+	if d.recordFsVerity != nil {
+		return d.recordFsVerity(d.metadata.Name, roFile)
+	}
+	return nil
 }
 
 func closeDestinationFiles(files chan *destinationFile, errors chan error) {
@@ -1219,28 +1224,18 @@ func reopenFileReadOnly(f *os.File) (*os.File, error) {
 }
 
 func (c *chunkedDiffer) findAndCopyFile(dirfd int, r *fileMetadata, copyOptions *findAndCopyFileOptions, mode os.FileMode) (bool, error) {
-	finalizeFile := func(dstFile *os.File) error {
-		if dstFile == nil {
-			return nil
-		}
-		err := setFileAttrs(dirfd, dstFile, mode, r, copyOptions.options, false)
-		if err != nil {
-			dstFile.Close()
-			return err
-		}
-		var roFile *os.File
-		if c.useFsVerity != graphdriver.DifferFsVerityDisabled {
-			roFile, err = reopenFileReadOnly(dstFile)
-		}
-		dstFile.Close()
-		if err != nil {
-			return err
-		}
+	finalizeFile := func(roFile *os.File) error {
 		if roFile == nil {
 			return nil
 		}
-
 		defer roFile.Close()
+
+		if err := setFileAttrs(dirfd, roFile, mode, r, copyOptions.options, false); err != nil {
+			return err
+		}
+		if c.useFsVerity == graphdriver.DifferFsVerityDisabled {
+			return nil
+		}
 		return c.recordFsVerity(r.Name, roFile)
 	}
 
