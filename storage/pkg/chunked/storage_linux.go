@@ -46,7 +46,7 @@ import (
 const (
 	maxNumberMissingChunks  = 1024
 	autoMergePartsThreshold = 1024 // if the gap between two ranges is below this threshold, automatically merge them.
-	newFileFlags            = (unix.O_CREAT | unix.O_TRUNC | unix.O_EXCL | unix.O_WRONLY)
+	newFileFlags            = (unix.O_CREAT | unix.O_TRUNC | unix.O_EXCL | unix.O_WRONLY | unix.O_CLOEXEC)
 	bigDataKey              = "zstd-chunked-manifest"
 	chunkedData             = "zstd-chunked-data"
 	chunkedLayerDataKey     = "zstd-chunked-layer-data"

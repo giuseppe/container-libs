@@ -534,7 +534,7 @@ func safeLink(dirfd int, mode os.FileMode, metadata *fileMetadata, options *arch
 		return err
 	}
 
-	newFile, err := openFileUnderRoot(dirfd, metadata.Name, unix.O_WRONLY|unix.O_NOFOLLOW, 0)
+	newFile, err := openFileUnderRoot(dirfd, metadata.Name, unix.O_WRONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		// If the target is a symlink, open the file with O_PATH.
 		if errors.Is(err, unix.ELOOP) {
