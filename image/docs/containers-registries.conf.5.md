@@ -110,7 +110,9 @@ as-is. But other settings like insecure/blocked/mirrors will be applied to match
 The mirrors are attempted in the specified order; the first one that can be
 contacted and contains the image will be used (and if none of the mirrors contains the image,
 the primary location specified by the `registry.location` field, or using the unmodified
-user-specified reference, is tried last).
+user-specified reference, is tried last).  If individual blob fetches later fail on the
+selected source, the remaining sources are tried automatically (see **Blob-level mirror
+fallback** below).
 
 Each TOML table in the `mirror` array can contain the following fields:
 - `location`： same semantics
@@ -131,6 +133,23 @@ registry.
 Referencing an image by digest ensures that the same is always used
 (whereas referencing an image by a tag may cause different registries to return
 different images if the tag mapping is out of sync).
+
+
+#### Blob-level mirror fallback
+
+After a pull source is selected based on manifest availability, individual blob
+(layer) fetches may still fail.  When a blob fetch fails with a transient error
+(HTTP 5xx, network timeout), `BLOB_UNKNOWN`, or HTTP 429 after the built-in
+retries, the remaining configured sources are tried in order.  If a working
+source is found, it is used for subsequent blob fetches in the same pull
+operation.
+
+This means that even if the selected source can serve the manifest, blob pulls
+can transparently retry on the same source once and then fall back to another
+mirror or the primary registry without restarting the entire pull.
+
+This fallback or retry operates in addition to caller-level retry (e.g. `containers-common`'s `retry` package or kubelet retries).  A single blob fetch may be retried once on the same source before
+falling back, and the caller may retry the entire pull operation on top of that.
 
 
 *Note*: Redirection and mirrors are currently processed only when reading a single image,
@@ -256,7 +275,9 @@ Given the above, a pull of `example.com/foo/image:latest` will try:
 2. `example-mirror-1.local/mirrors/foo/image:latest`
 3. `internal-registry-for-example.com/bar/image:latest`
 
-in order, and use the first one that exists.
+in order, and use the first one that can serve the manifest.  If a blob fetch
+subsequently fails on the selected source, the remaining sources are tried as
+described in **Blob-level mirror fallback**.
 
 Note that a mirror is associated only with the current `[[registry]]` TOML table. If using the example above, pulling the image `registry.com/image:latest` will hence only reach out to `mirror.registry.com`, and the mirrors associated with `example.com/foo` will not be considered.
 
