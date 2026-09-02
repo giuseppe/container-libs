@@ -1338,7 +1338,7 @@ func TestNormalizeCapabilityRootID(t *testing.T) {
 		[]idtools.IDMap{{ContainerID: 0, HostID: 1000000, Size: 65536}},
 	)
 
-	t.Run("v3 owned by host root is downgraded to v2 and keeps its flags", func(t *testing.T) {
+	t.Run("v3 owned by container root (host id 1000000) is downgraded to v2 and keeps its flags", func(t *testing.T) {
 		out, err := normalizeCapabilityRootID(mappings, makeVfsCap(1000000))
 		require.NoError(t, err)
 		require.Len(t, out, vfsCapDataSizeV2)
@@ -1349,7 +1349,7 @@ func TestNormalizeCapabilityRootID(t *testing.T) {
 		assert.Equal(t, uint32(0x000001ff), binary.LittleEndian.Uint32(out[12:16]), "inheritable set preserved")
 	})
 
-	t.Run("v3 owned by a non-root host id keeps v3 with the container rootid", func(t *testing.T) {
+	t.Run("v3 owned by a non-root container id keeps v3 with the container rootid", func(t *testing.T) {
 		out, err := normalizeCapabilityRootID(mappings, makeVfsCap(1000123))
 		require.NoError(t, err)
 		require.Len(t, out, vfsCapDataSizeV3)
