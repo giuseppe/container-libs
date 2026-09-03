@@ -75,6 +75,7 @@ jobs:
     packages: [containers-common-fedora]
     dist_git_branches: &fedora_targets
       - fedora-rawhide
+      - fedora-45
 
   # Ignore CentOS Stream for now
   - job: propose_downstream
