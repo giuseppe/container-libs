@@ -8,7 +8,7 @@ go 1.26.0
 require (
 	dario.cat/mergo v1.0.2
 	github.com/BurntSushi/toml v1.6.0
-	github.com/ProtonMail/go-crypto v1.4.1
+	github.com/ProtonMail/go-crypto v1.5.1
 	github.com/containers/libtrust v0.0.0-20230121012942-c1716e8a8d01
 	github.com/containers/ocicrypt v1.3.2
 	github.com/cyberphone/json-canonicalization v0.0.0-20241213102144-19d51d7fe467
